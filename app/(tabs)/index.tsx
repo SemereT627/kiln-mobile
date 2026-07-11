@@ -8,6 +8,8 @@ import {
   StyleSheet,
   Modal,
   RefreshControl,
+  KeyboardAvoidingView,
+  Platform,
 } from "react-native";
 import * as Crypto from "expo-crypto";
 import { API_BASE_URL, supabase } from "@/lib/supabase";
@@ -128,7 +130,10 @@ export default function SellScreen() {
       />
 
       <Modal visible={!!selected} transparent animationType="slide">
-        <View style={styles.modalOverlay}>
+        <KeyboardAvoidingView
+          style={styles.modalOverlay}
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+        >
           <View style={styles.modalCard}>
             <Text style={styles.modalTitle}>{selected?.name}</Text>
             <Text style={styles.modalSubtitle}>
@@ -161,7 +166,7 @@ export default function SellScreen() {
               </Pressable>
             </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </View>
   );
