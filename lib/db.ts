@@ -161,6 +161,7 @@ export type CachedCeramic = {
   measurementUnit: string;
   pricePerUnit: number | null;
   currentStock: number;
+  imageUrl: string | null;
 };
 
 /** Replaces the whole cached catalog — called after every successful fetch

@@ -10,6 +10,7 @@ import {
   RefreshControl,
   KeyboardAvoidingView,
   Platform,
+  Image,
 } from "react-native";
 import * as Crypto from "expo-crypto";
 import { API_BASE_URL, supabase } from "@/lib/supabase";
@@ -47,6 +48,7 @@ export default function SellScreen() {
         measurementUnit: i.measurementUnit || "m²",
         pricePerUnit: i.pricePerUnit ?? null,
         currentStock: i.currentStock,
+        imageUrl: i.imageUrl ?? null,
       }));
       await cacheCatalog(items);
       setCatalog(items);
@@ -194,6 +196,11 @@ function CatalogRow({
       onPress={() => !isOut && onPress(item)}
       disabled={isOut}
     >
+      {item.imageUrl ? (
+        <Image source={{ uri: item.imageUrl }} style={styles.rowImage} />
+      ) : (
+        <View style={[styles.rowImage, styles.rowImagePlaceholder]} />
+      )}
       <View style={{ flex: 1 }}>
         <Text style={styles.rowTitle}>{item.name}</Text>
         <Text style={styles.rowSubtitle}>
@@ -229,6 +236,14 @@ const styles = StyleSheet.create({
     borderBottomColor: "#e5e5e5",
   },
   rowDisabled: { opacity: 0.4 },
+  rowImage: {
+    width: 44,
+    height: 44,
+    borderRadius: 8,
+    marginRight: 12,
+    backgroundColor: "#f0f0f0",
+  },
+  rowImagePlaceholder: { backgroundColor: "#e5e5e5" },
   rowTitle: { fontSize: 15, fontWeight: "600" },
   rowSubtitle: { fontSize: 12, color: "#888", marginTop: 2 },
   rowStock: { fontSize: 13, fontWeight: "700", color: "#059669" },
