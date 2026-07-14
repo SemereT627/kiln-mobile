@@ -133,6 +133,7 @@ export async function runOrderSync(): Promise<{ synced: number; rejected: number
     });
 
     if (!res.ok) {
+      console.error("runOrderSync: server responded", res.status, await res.text().catch(() => ""));
       await resetOrdersSyncingToPending();
       return { synced: 0, rejected: 0 };
     }
@@ -151,7 +152,8 @@ export async function runOrderSync(): Promise<{ synced: number; rejected: number
       }
     }
     return { synced, rejected };
-  } catch {
+  } catch (err) {
+    console.error("runOrderSync: request failed", err);
     await resetOrdersSyncingToPending();
     return { synced: 0, rejected: 0 };
   } finally {
