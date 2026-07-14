@@ -1,16 +1,20 @@
-import { View, ActivityIndicator } from "react-native";
+import { View, ActivityIndicator, StyleSheet } from "react-native";
 import { Redirect, Tabs } from "expo-router";
+import { Ionicons } from "@expo/vector-icons";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAuth } from "@/context/auth-context";
 import { useAutoSync } from "@/hooks/use-auto-sync";
+import { colors } from "@/constants/theme";
 
 export default function TabsLayout() {
   const { session, loading } = useAuth();
+  const insets = useSafeAreaInsets();
   useAutoSync();
 
   if (loading) {
     return (
-      <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
-        <ActivityIndicator />
+      <View style={styles.loading}>
+        <ActivityIndicator color={colors.primary} />
       </View>
     );
   }
@@ -20,9 +24,63 @@ export default function TabsLayout() {
   }
 
   return (
-    <Tabs screenOptions={{ headerTitleStyle: { fontWeight: "700" } }}>
-      <Tabs.Screen name="index" options={{ title: "Sell" }} />
-      <Tabs.Screen name="queue" options={{ title: "Sale Queue" }} />
+    <Tabs
+      screenOptions={{
+        headerShown: false,
+        tabBarActiveTintColor: colors.primary,
+        tabBarInactiveTintColor: colors.textFaint,
+        tabBarStyle: [styles.tabBar, { height: 52 + insets.bottom, paddingBottom: insets.bottom + 6 }],
+        tabBarLabelStyle: styles.tabBarLabel,
+        tabBarItemStyle: styles.tabBarItem,
+      }}
+    >
+      <Tabs.Screen
+        name="index"
+        options={{
+          title: "Sell",
+          tabBarIcon: ({ color, focused }) => (
+            <Ionicons
+              name={focused ? "storefront" : "storefront-outline"}
+              size={22}
+              color={color}
+            />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="queue"
+        options={{
+          title: "Order Queue",
+          tabBarIcon: ({ color, focused }) => (
+            <Ionicons
+              name={focused ? "receipt" : "receipt-outline"}
+              size={22}
+              color={color}
+            />
+          ),
+        }}
+      />
     </Tabs>
   );
 }
+
+const styles = StyleSheet.create({
+  loading: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: colors.background,
+  },
+  tabBar: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
+    paddingTop: 8,
+  },
+  tabBarItem: {
+    paddingTop: 2,
+  },
+  tabBarLabel: {
+    fontSize: 11,
+    fontWeight: "600",
+  },
+});

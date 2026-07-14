@@ -10,12 +10,17 @@ import {
   Platform,
 } from "react-native";
 import { Redirect } from "expo-router";
+import { Ionicons } from "@expo/vector-icons";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAuth } from "@/context/auth-context";
+import { colors, radius, spacing } from "@/constants/theme";
 
 export default function LoginScreen() {
+  const insets = useSafeAreaInsets();
   const { session, loading, signIn } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -33,41 +38,70 @@ export default function LoginScreen() {
 
   return (
     <KeyboardAvoidingView
-      style={styles.container}
+      style={[styles.container, { paddingTop: insets.top, paddingBottom: insets.bottom }]}
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
-      <Text style={styles.title}>ACSM Sales</Text>
-      <Text style={styles.subtitle}>Sign in to record sales.</Text>
+      <View style={styles.brand}>
+        <View style={styles.brandMark}>
+          <Ionicons name="storefront" size={26} color="#fff" />
+        </View>
+        <Text style={styles.title}>ACSM Sales</Text>
+        <Text style={styles.subtitle}>Sign in to record sales.</Text>
+      </View>
 
-      <TextInput
-        style={styles.input}
-        placeholder="Email"
-        autoCapitalize="none"
-        keyboardType="email-address"
-        value={email}
-        onChangeText={setEmail}
-      />
-      <TextInput
-        style={styles.input}
-        placeholder="Password"
-        secureTextEntry
-        value={password}
-        onChangeText={setPassword}
-      />
+      <View style={styles.form}>
+        <View style={styles.inputWrap}>
+          <Ionicons name="mail-outline" size={18} color={colors.textFaint} style={styles.inputIcon} />
+          <TextInput
+            style={styles.input}
+            placeholder="Email"
+            placeholderTextColor={colors.textFaint}
+            autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType="email-address"
+            value={email}
+            onChangeText={setEmail}
+          />
+        </View>
 
-      {error && <Text style={styles.error}>{error}</Text>}
+        <View style={styles.inputWrap}>
+          <Ionicons name="lock-closed-outline" size={18} color={colors.textFaint} style={styles.inputIcon} />
+          <TextInput
+            style={styles.input}
+            placeholder="Password"
+            placeholderTextColor={colors.textFaint}
+            secureTextEntry={!showPassword}
+            value={password}
+            onChangeText={setPassword}
+          />
+          <Pressable onPress={() => setShowPassword((v) => !v)} hitSlop={8}>
+            <Ionicons
+              name={showPassword ? "eye-off-outline" : "eye-outline"}
+              size={18}
+              color={colors.textFaint}
+            />
+          </Pressable>
+        </View>
 
-      <Pressable
-        style={[styles.button, submitting && styles.buttonDisabled]}
-        onPress={handleSubmit}
-        disabled={submitting || !email || !password}
-      >
-        {submitting ? (
-          <ActivityIndicator color="#fff" />
-        ) : (
-          <Text style={styles.buttonText}>Sign In</Text>
+        {error && (
+          <View style={styles.errorBanner}>
+            <Ionicons name="alert-circle" size={16} color={colors.danger} />
+            <Text style={styles.error}>{error}</Text>
+          </View>
         )}
-      </Pressable>
+
+        <Pressable
+          style={[styles.button, (submitting || !email || !password) && styles.buttonDisabled]}
+          onPress={handleSubmit}
+          disabled={submitting || !email || !password}
+        >
+          {submitting ? (
+            <ActivityIndicator color="#fff" />
+          ) : (
+            <Text style={styles.buttonText}>Sign In</Text>
+          )}
+        </Pressable>
+      </View>
     </KeyboardAvoidingView>
   );
 }
@@ -76,28 +110,51 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     justifyContent: "center",
-    paddingHorizontal: 24,
-    backgroundColor: "#fff",
+    paddingHorizontal: spacing.xl,
+    backgroundColor: colors.background,
   },
-  title: { fontSize: 28, fontWeight: "700", marginBottom: 4 },
-  subtitle: { fontSize: 14, color: "#666", marginBottom: 24 },
-  input: {
-    borderWidth: 1,
-    borderColor: "#ddd",
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    marginBottom: 12,
-    fontSize: 16,
-  },
-  error: { color: "#c00", marginBottom: 12, fontSize: 13 },
-  button: {
-    backgroundColor: "#2563eb",
-    borderRadius: 10,
-    paddingVertical: 14,
+  brand: { alignItems: "center", marginBottom: spacing.xxl },
+  brandMark: {
+    width: 56,
+    height: 56,
+    borderRadius: radius.lg,
+    backgroundColor: colors.primary,
     alignItems: "center",
-    marginTop: 8,
+    justifyContent: "center",
+    marginBottom: spacing.lg,
   },
-  buttonDisabled: { opacity: 0.6 },
-  buttonText: { color: "#fff", fontWeight: "600", fontSize: 16 },
+  title: { fontSize: 24, fontWeight: "800", color: colors.text },
+  subtitle: { fontSize: 14, color: colors.textMuted, marginTop: 4 },
+  form: { gap: spacing.md },
+  inputWrap: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    borderRadius: radius.md,
+    paddingHorizontal: 14,
+    height: 50,
+  },
+  inputIcon: {},
+  input: { flex: 1, fontSize: 16, color: colors.text, height: "100%" },
+  errorBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: colors.dangerSoft,
+    borderRadius: radius.md,
+    padding: 10,
+  },
+  error: { color: colors.danger, fontSize: 13, flex: 1 },
+  button: {
+    backgroundColor: colors.primary,
+    borderRadius: radius.md,
+    paddingVertical: 15,
+    alignItems: "center",
+    marginTop: spacing.xs,
+  },
+  buttonDisabled: { opacity: 0.5 },
+  buttonText: { color: "#fff", fontWeight: "700", fontSize: 16 },
 });

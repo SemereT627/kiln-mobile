@@ -1,8 +1,12 @@
 import { useEffect, useRef } from "react";
 import { AppState } from "react-native";
 import NetInfo from "@react-native-community/netinfo";
-import { runSync } from "@/lib/sync";
+import { runSync, runOrderSync } from "@/lib/sync";
 import { useAuth } from "@/context/auth-context";
+
+async function syncAll() {
+  await Promise.all([runSync(), runOrderSync()]);
+}
 
 /** Triggers the sync engine on reconnect and on app foreground. */
 export function useAutoSync(onSyncComplete?: () => void) {
@@ -15,19 +19,19 @@ export function useAutoSync(onSyncComplete?: () => void) {
     const unsubscribeNet = NetInfo.addEventListener((state) => {
       const isOnline = !!state.isConnected && state.isInternetReachable !== false;
       if (isOnline && wasOffline.current) {
-        runSync().then(onSyncComplete);
+        syncAll().then(onSyncComplete);
       }
       wasOffline.current = !isOnline;
     });
 
     const appStateSub = AppState.addEventListener("change", (nextState) => {
       if (nextState === "active") {
-        runSync().then(onSyncComplete);
+        syncAll().then(onSyncComplete);
       }
     });
 
     // Fire once on mount too (covers "already online when the screen opens").
-    runSync().then(onSyncComplete);
+    syncAll().then(onSyncComplete);
 
     return () => {
       unsubscribeNet();

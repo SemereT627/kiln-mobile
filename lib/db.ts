@@ -35,6 +35,25 @@ function getDb() {
           id TEXT PRIMARY KEY NOT NULL,
           data TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS pending_orders (
+          client_id TEXT PRIMARY KEY NOT NULL,
+          payment_method TEXT NOT NULL,
+          bank_account TEXT,
+          notes TEXT,
+          status TEXT NOT NULL DEFAULT 'pending',
+          fail_reason TEXT,
+          approval_status TEXT,
+          rejection_reason TEXT,
+          created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS pending_order_items (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          order_client_id TEXT NOT NULL,
+          ceramic_id TEXT NOT NULL,
+          ceramic_name TEXT NOT NULL,
+          quantity REAL NOT NULL,
+          price_at_sale REAL
+        );
       `);
       return db;
     });
@@ -140,16 +159,16 @@ export async function discardSale(clientId: string) {
   ]);
 }
 
-/** Sum of this device's not-yet-synced quantities for a ceramic, for the
- * "estimated stock" display — the real check only happens server-side. */
-export async function getUnsyncedQuantity(ceramicId: string): Promise<number> {
+/** Sum of this device's not-yet-synced quantities per ceramic, for the
+ * "estimated stock" display — the real check only happens server-side. One
+ * query for the whole catalog instead of one per row. */
+export async function getUnsyncedQuantities(): Promise<Record<string, number>> {
   const db = await getDb();
-  const row = await db.getFirstAsync<{ total: number | null }>(
-    `SELECT SUM(quantity) as total FROM pending_sales
-     WHERE ceramic_id = ? AND status IN ('pending', 'syncing')`,
-    [ceramicId],
+  const rows = await db.getAllAsync<{ ceramic_id: string; total: number }>(
+    `SELECT ceramic_id, SUM(quantity) as total FROM pending_sales
+     WHERE status IN ('pending', 'syncing') GROUP BY ceramic_id`,
   );
-  return row?.total ?? 0;
+  return Object.fromEntries(rows.map((r) => [r.ceramic_id, r.total]));
 }
 
 export type CachedCeramic = {
@@ -185,4 +204,183 @@ export async function getCachedCatalog(): Promise<CachedCeramic[]> {
     "SELECT data FROM catalog_cache",
   );
   return rows.map((r) => JSON.parse(r.data));
+}
+
+export type PaymentMethod = "cash" | "bank_transfer" | "credit";
+export type OrderApprovalStatus = "pending" | "approved" | "rejected";
+
+export type OrderCartItem = {
+  ceramicId: string;
+  ceramicName: string;
+  quantity: number;
+  priceAtSale: number | null;
+};
+
+export type PendingOrder = {
+  clientId: string;
+  paymentMethod: PaymentMethod;
+  bankAccount: string | null;
+  notes: string | null;
+  status: SyncStatus;
+  failReason: string | null;
+  approvalStatus: OrderApprovalStatus | null;
+  rejectionReason: string | null;
+  createdAt: string;
+  items: OrderCartItem[];
+};
+
+function rowToOrder(row: any, items: OrderCartItem[]): PendingOrder {
+  return {
+    clientId: row.client_id,
+    paymentMethod: row.payment_method,
+    bankAccount: row.bank_account,
+    notes: row.notes,
+    status: row.status,
+    failReason: row.fail_reason,
+    approvalStatus: row.approval_status,
+    rejectionReason: row.rejection_reason,
+    createdAt: row.created_at,
+    items,
+  };
+}
+
+/** Queues a multi-item order awaiting admin approval — same offline-first
+ * shape as enqueueSale, one level deeper for line items. */
+export async function enqueueOrder(input: {
+  clientId: string;
+  paymentMethod: PaymentMethod;
+  bankAccount: string | null;
+  notes: string | null;
+  items: OrderCartItem[];
+}) {
+  const db = await getDb();
+  await db.withTransactionAsync(async () => {
+    await db.runAsync(
+      `INSERT INTO pending_orders
+        (client_id, payment_method, bank_account, notes, status, created_at)
+       VALUES (?, ?, ?, ?, 'pending', ?)`,
+      [
+        input.clientId,
+        input.paymentMethod,
+        input.bankAccount,
+        input.notes,
+        new Date().toISOString(),
+      ],
+    );
+    for (const item of input.items) {
+      await db.runAsync(
+        `INSERT INTO pending_order_items
+          (order_client_id, ceramic_id, ceramic_name, quantity, price_at_sale)
+         VALUES (?, ?, ?, ?, ?)`,
+        [input.clientId, item.ceramicId, item.ceramicName, item.quantity, item.priceAtSale],
+      );
+    }
+  });
+}
+
+async function attachOrderItems(db: SQLite.SQLiteDatabase, orders: any[]): Promise<PendingOrder[]> {
+  const result: PendingOrder[] = [];
+  for (const row of orders) {
+    const itemRows = await db.getAllAsync<any>(
+      "SELECT * FROM pending_order_items WHERE order_client_id = ?",
+      [row.client_id],
+    );
+    result.push(
+      rowToOrder(
+        row,
+        itemRows.map((r) => ({
+          ceramicId: r.ceramic_id,
+          ceramicName: r.ceramic_name,
+          quantity: r.quantity,
+          priceAtSale: r.price_at_sale,
+        })),
+      ),
+    );
+  }
+  return result;
+}
+
+export async function getAllOrders(): Promise<PendingOrder[]> {
+  const db = await getDb();
+  const rows = await db.getAllAsync<any>(
+    "SELECT * FROM pending_orders ORDER BY created_at DESC",
+  );
+  return attachOrderItems(db, rows);
+}
+
+export async function getPendingOrders(): Promise<PendingOrder[]> {
+  const db = await getDb();
+  const rows = await db.getAllAsync<any>(
+    "SELECT * FROM pending_orders WHERE status IN ('pending', 'syncing') ORDER BY created_at ASC",
+  );
+  return attachOrderItems(db, rows);
+}
+
+export async function markOrdersSyncing(clientIds: string[]) {
+  if (clientIds.length === 0) return;
+  const db = await getDb();
+  const placeholders = clientIds.map(() => "?").join(",");
+  await db.runAsync(
+    `UPDATE pending_orders SET status = 'syncing' WHERE client_id IN (${placeholders})`,
+    clientIds,
+  );
+}
+
+export async function markOrderSynced(clientId: string) {
+  const db = await getDb();
+  await db.runAsync(
+    "UPDATE pending_orders SET status = 'synced', fail_reason = NULL WHERE client_id = ?",
+    [clientId],
+  );
+}
+
+export async function markOrderRejectedSync(clientId: string, reason: string) {
+  const db = await getDb();
+  await db.runAsync(
+    "UPDATE pending_orders SET status = 'rejected', fail_reason = ? WHERE client_id = ?",
+    [reason, clientId],
+  );
+}
+
+export async function resetOrdersSyncingToPending() {
+  const db = await getDb();
+  await db.runAsync(
+    "UPDATE pending_orders SET status = 'pending' WHERE status = 'syncing'",
+  );
+}
+
+export async function discardOrder(clientId: string) {
+  const db = await getDb();
+  await db.withTransactionAsync(async () => {
+    await db.runAsync("DELETE FROM pending_order_items WHERE order_client_id = ?", [clientId]);
+    await db.runAsync("DELETE FROM pending_orders WHERE client_id = ?", [clientId]);
+  });
+}
+
+/** Updates the server-side approval status for synced orders, matched by
+ * client_id — called after a GET /api/orders?mine=1 refresh. */
+export async function updateOrderApprovalStatuses(
+  updates: { clientId: string; approvalStatus: OrderApprovalStatus; rejectionReason: string | null }[],
+) {
+  const db = await getDb();
+  for (const u of updates) {
+    await db.runAsync(
+      "UPDATE pending_orders SET approval_status = ?, rejection_reason = ? WHERE client_id = ?",
+      [u.approvalStatus, u.rejectionReason, u.clientId],
+    );
+  }
+}
+
+/** Sum of this device's not-yet-synced order quantities per ceramic — see
+ * getUnsyncedQuantities. */
+export async function getUnsyncedOrderQuantities(): Promise<Record<string, number>> {
+  const db = await getDb();
+  const rows = await db.getAllAsync<{ ceramic_id: string; total: number }>(
+    `SELECT oi.ceramic_id as ceramic_id, SUM(oi.quantity) as total
+     FROM pending_order_items oi
+     JOIN pending_orders o ON o.client_id = oi.order_client_id
+     WHERE o.status IN ('pending', 'syncing')
+     GROUP BY oi.ceramic_id`,
+  );
+  return Object.fromEntries(rows.map((r) => [r.ceramic_id, r.total]));
 }
