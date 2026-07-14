@@ -6,7 +6,6 @@ import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { getAllOrders, discardOrder, type PendingOrder, type SyncStatus } from "@/lib/db";
 import { runOrderSync, refreshOrderApprovalStatuses } from "@/lib/sync";
-import { useAuth } from "@/context/auth-context";
 import { colors, radius, spacing, shadow } from "@/constants/theme";
 
 const SYNC_STATUS_LABEL: Record<SyncStatus, string> = {
@@ -56,7 +55,6 @@ const PAYMENT_LABEL: Record<string, string> = {
 
 export default function QueueScreen() {
   const insets = useSafeAreaInsets();
-  const { signOut } = useAuth();
   const [orders, setOrders] = useState<PendingOrder[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -90,10 +88,6 @@ export default function QueueScreen() {
     <View style={styles.container}>
       <View style={[styles.header, { paddingTop: insets.top + spacing.sm }]}>
         <Text style={styles.headerTitle}>Order Queue</Text>
-        <Pressable style={styles.signOutButton} onPress={signOut} hitSlop={8}>
-          <Ionicons name="log-out-outline" size={16} color={colors.textMuted} />
-          <Text style={styles.signOutText}>Sign Out</Text>
-        </Pressable>
       </View>
 
       <FlatList
@@ -209,8 +203,6 @@ const styles = StyleSheet.create({
     paddingBottom: spacing.md,
   },
   headerTitle: { fontSize: 26, fontWeight: "800", color: colors.text },
-  signOutButton: { flexDirection: "row", alignItems: "center", gap: 4, padding: 4 },
-  signOutText: { color: colors.textMuted, fontSize: 13, fontWeight: "600" },
   emptyWrap: { alignItems: "center", marginTop: 72, paddingHorizontal: 32, gap: 4, flex: 1, justifyContent: "center" },
   emptyTitle: { fontSize: 15, fontWeight: "700", color: colors.text, marginTop: 12 },
   emptySubtitle: { fontSize: 13, color: colors.textMuted, textAlign: "center" },
