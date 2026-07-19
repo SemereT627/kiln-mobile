@@ -11,11 +11,32 @@ import {
   markOrderRejectedSync,
   resetOrdersSyncingToPending,
   updateOrderApprovalStatuses,
+  setSyncIssue,
 } from "@/lib/db";
 
 type SyncResult =
   | { clientId: string; status: "synced" }
   | { clientId: string; status: "rejected"; reason: string };
+
+/**
+ * Fetches the current session, flagging (and persisting) the "not signed
+ * in" case as a sync-blocking issue instead of failing silently — this is
+ * the dead-refresh-token case that otherwise looks like queued orders never
+ * syncing until logout/login.
+ */
+async function getSessionForSync() {
+  const { data: { session }, error } = await supabase.auth.getSession();
+  if (!session) {
+    console.error("sync: no session", error);
+    await setSyncIssue(
+      error?.message
+        ? `Not signed in (${error.message}). Log out and log back in to resume syncing.`
+        : "Not signed in. Log out and log back in to resume syncing.",
+    );
+    return null;
+  }
+  return session;
+}
 
 let syncing = false;
 
@@ -36,9 +57,7 @@ export async function runSync(): Promise<{ synced: number; rejected: number }> {
     const pending = await getPendingSales();
     if (pending.length === 0) return { synced: 0, rejected: 0 };
 
-    const {
-      data: { session },
-    } = await supabase.auth.getSession();
+    const session = await getSessionForSync();
     if (!session) return { synced: 0, rejected: 0 };
 
     await markSyncing(pending.map((s) => s.clientId));
@@ -63,10 +82,14 @@ export async function runSync(): Promise<{ synced: number; rejected: number }> {
     if (!res.ok) {
       // Network reachable but the request itself failed (e.g. 401 from an
       // expired refresh) — leave rows as 'pending' for the next attempt.
+      if (res.status === 401) {
+        await setSyncIssue("Session expired. Log out and log back in to resume syncing.");
+      }
       await resetSyncingToPending();
       return { synced: 0, rejected: 0 };
     }
 
+    await setSyncIssue(null);
     const { results }: { results: SyncResult[] } = await res.json();
 
     let synced = 0;
@@ -108,9 +131,7 @@ export async function runOrderSync(): Promise<{ synced: number; rejected: number
     const pending = await getPendingOrders();
     if (pending.length === 0) return { synced: 0, rejected: 0 };
 
-    const {
-      data: { session },
-    } = await supabase.auth.getSession();
+    const session = await getSessionForSync();
     if (!session) return { synced: 0, rejected: 0 };
 
     await markOrdersSyncing(pending.map((o) => o.clientId));
@@ -134,10 +155,14 @@ export async function runOrderSync(): Promise<{ synced: number; rejected: number
 
     if (!res.ok) {
       console.error("runOrderSync: server responded", res.status, await res.text().catch(() => ""));
+      if (res.status === 401) {
+        await setSyncIssue("Session expired. Log out and log back in to resume syncing.");
+      }
       await resetOrdersSyncingToPending();
       return { synced: 0, rejected: 0 };
     }
 
+    await setSyncIssue(null);
     const { results }: { results: SyncResult[] } = await res.json();
 
     let synced = 0;

@@ -54,6 +54,11 @@ function getDb() {
           quantity REAL NOT NULL,
           price_at_sale REAL
         );
+        CREATE TABLE IF NOT EXISTS sync_state (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          issue TEXT,
+          issue_at TEXT
+        );
       `);
       return db;
     });
@@ -383,4 +388,27 @@ export async function getUnsyncedOrderQuantities(): Promise<Record<string, numbe
      GROUP BY oi.ceramic_id`,
   );
   return Object.fromEntries(rows.map((r) => [r.ceramic_id, r.total]));
+}
+
+export type SyncIssue = { message: string; at: string };
+
+/** Records a blocking sync problem (e.g. dead session) so it survives app
+ * restarts and can be surfaced in the Queue screen — cleared once a sync
+ * actually succeeds. Not for per-order failures, which use fail_reason. */
+export async function setSyncIssue(message: string | null) {
+  const db = await getDb();
+  await db.runAsync(
+    `INSERT INTO sync_state (id, issue, issue_at) VALUES (1, ?, ?)
+     ON CONFLICT (id) DO UPDATE SET issue = excluded.issue, issue_at = excluded.issue_at`,
+    [message, message ? new Date().toISOString() : null],
+  );
+}
+
+export async function getSyncIssue(): Promise<SyncIssue | null> {
+  const db = await getDb();
+  const row = await db.getFirstAsync<{ issue: string | null; issue_at: string | null }>(
+    "SELECT issue, issue_at FROM sync_state WHERE id = 1",
+  );
+  if (!row?.issue) return null;
+  return { message: row.issue, at: row.issue_at ?? new Date().toISOString() };
 }
