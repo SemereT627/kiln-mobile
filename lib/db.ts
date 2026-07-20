@@ -59,9 +59,20 @@ function getDb() {
           issue TEXT,
           issue_at TEXT
         );
-        ALTER TABLE pending_order_items ADD COLUMN IF NOT EXISTS final_quantity REAL;
-        ALTER TABLE pending_order_items ADD COLUMN IF NOT EXISTS final_price_at_sale REAL;
       `);
+      // This device's bundled SQLite doesn't support ADD COLUMN IF NOT
+      // EXISTS — added defensively so re-running on an already-migrated
+      // install doesn't throw.
+      for (const alterStatement of [
+        "ALTER TABLE pending_order_items ADD COLUMN final_quantity REAL",
+        "ALTER TABLE pending_order_items ADD COLUMN final_price_at_sale REAL",
+      ]) {
+        try {
+          await db.execAsync(alterStatement);
+        } catch (err: any) {
+          if (!String(err?.message ?? err).includes("duplicate column name")) throw err;
+        }
+      }
       return db;
     });
   }
