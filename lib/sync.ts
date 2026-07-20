@@ -11,6 +11,7 @@ import {
   markOrderRejectedSync,
   resetOrdersSyncingToPending,
   updateOrderApprovalStatuses,
+  applyOrderItemAdjustments,
   setSyncIssue,
 } from "@/lib/db";
 
@@ -190,6 +191,7 @@ type MyOrderStatus = {
   clientId: string | null;
   status: "pending" | "approved" | "rejected";
   rejectionReason: string | null;
+  items: { ceramicId: string; quantity: number; priceAtSale: number }[];
 };
 
 /**
@@ -218,6 +220,12 @@ export async function refreshOrderApprovalStatuses(): Promise<void> {
         rejectionReason: o.rejectionReason,
       }));
     await updateOrderApprovalStatuses(updates);
+
+    for (const order of data) {
+      if (order.status === "approved" && order.clientId) {
+        await applyOrderItemAdjustments(order.clientId, order.items ?? []);
+      }
+    }
   } catch {
     // Offline or transient failure — local statuses stay as last known.
   }

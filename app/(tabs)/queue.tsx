@@ -133,7 +133,8 @@ export default function QueueScreen() {
         }
         renderItem={({ item }) => {
           const total = item.items.reduce(
-            (sum, i) => sum + i.quantity * (i.priceAtSale ?? 0),
+            (sum, i) =>
+              sum + (i.finalQuantity ?? i.quantity) * (i.finalPriceAtSale ?? i.priceAtSale ?? 0),
             0,
           );
           return (
@@ -159,11 +160,30 @@ export default function QueueScreen() {
                 {item.bankAccount ? ` · ${item.bankAccount}` : ""} ·{" "}
                 {new Date(item.createdAt).toLocaleString()}
               </Text>
-              {item.items.map((line) => (
-                <Text key={line.ceramicId} style={styles.lineItem}>
-                  · {line.ceramicName} — {line.quantity}
-                </Text>
-              ))}
+              {item.items.map((line) => {
+                const adjusted =
+                  (line.finalQuantity !== null &&
+                    line.finalQuantity !== undefined &&
+                    line.finalQuantity !== line.quantity) ||
+                  (line.finalPriceAtSale !== null &&
+                    line.finalPriceAtSale !== undefined &&
+                    line.finalPriceAtSale !== line.priceAtSale);
+                return (
+                  <Text key={line.ceramicId} style={styles.lineItem}>
+                    · {line.ceramicName} —{" "}
+                    {adjusted ? (
+                      <>
+                        <Text style={styles.lineItemOriginal}>{line.quantity}</Text>{" "}
+                        <Text style={styles.lineItemFinal}>
+                          {line.finalQuantity ?? line.quantity}
+                        </Text>
+                      </>
+                    ) : (
+                      line.quantity
+                    )}
+                  </Text>
+                );
+              })}
 
               {item.status === "synced" && item.approvalStatus && (
                 <View
@@ -252,6 +272,8 @@ const styles = StyleSheet.create({
   status: { fontSize: 12, fontWeight: "700" },
   meta: { fontSize: 12, color: colors.textMuted, marginTop: 4 },
   lineItem: { fontSize: 12, color: colors.textMuted, marginTop: 4 },
+  lineItemOriginal: { textDecorationLine: "line-through", color: colors.textFaint },
+  lineItemFinal: { color: colors.warning },
   approvalPill: {
     alignSelf: "flex-start",
     borderRadius: radius.pill,

@@ -59,6 +59,8 @@ function getDb() {
           issue TEXT,
           issue_at TEXT
         );
+        ALTER TABLE pending_order_items ADD COLUMN IF NOT EXISTS final_quantity REAL;
+        ALTER TABLE pending_order_items ADD COLUMN IF NOT EXISTS final_price_at_sale REAL;
       `);
       return db;
     });
@@ -219,6 +221,10 @@ export type OrderCartItem = {
   ceramicName: string;
   quantity: number;
   priceAtSale: number | null;
+  /** Set once the admin's approval differs from what was submitted — see
+   * applyOrderItemAdjustments. Absent until a post-approval sync writes it. */
+  finalQuantity?: number | null;
+  finalPriceAtSale?: number | null;
 };
 
 export type PendingOrder = {
@@ -298,6 +304,8 @@ async function attachOrderItems(db: SQLite.SQLiteDatabase, orders: any[]): Promi
           ceramicName: r.ceramic_name,
           quantity: r.quantity,
           priceAtSale: r.price_at_sale,
+          finalQuantity: r.final_quantity,
+          finalPriceAtSale: r.final_price_at_sale,
         })),
       ),
     );
@@ -372,6 +380,25 @@ export async function updateOrderApprovalStatuses(
     await db.runAsync(
       "UPDATE pending_orders SET approval_status = ?, rejection_reason = ? WHERE client_id = ?",
       [u.approvalStatus, u.rejectionReason, u.clientId],
+    );
+  }
+}
+
+/** Writes back the admin-approved final quantity/price for an order's line
+ * items, matched to local rows by ceramicId within the order (there's no
+ * per-item server id synced to the device). Only called for orders whose
+ * approval_status just turned 'approved' — see refreshOrderApprovalStatuses. */
+export async function applyOrderItemAdjustments(
+  clientId: string,
+  items: { ceramicId: string; quantity: number; priceAtSale: number }[],
+) {
+  const db = await getDb();
+  for (const item of items) {
+    await db.runAsync(
+      `UPDATE pending_order_items
+       SET final_quantity = ?, final_price_at_sale = ?
+       WHERE order_client_id = ? AND ceramic_id = ?`,
+      [item.quantity, item.priceAtSale, clientId, item.ceramicId],
     );
   }
 }
