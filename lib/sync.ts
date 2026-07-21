@@ -187,31 +187,53 @@ export async function runOrderSync(): Promise<{ synced: number; rejected: number
   }
 }
 
-type MyOrderStatus = {
+export type ServerOrder = {
   clientId: string | null;
   status: "pending" | "approved" | "rejected";
   rejectionReason: string | null;
-  items: { ceramicId: string; quantity: number; priceAtSale: number }[];
+  paymentMethod: "cash" | "bank_transfer" | "credit";
+  bankAccount: string | null;
+  notes: string | null;
+  createdAt: string;
+  items: {
+    ceramicId: string;
+    productName: string;
+    quantity: number;
+    priceAtSale: number;
+  }[];
 };
 
 /**
  * Refreshes the seller's synced orders with their current admin-review
- * status. Best-effort — silently no-ops offline. Called on Queue tab
- * focus / pull-to-refresh, not part of the write-side sync above.
+ * status, and returns the full list — used both to write back local status
+ * (below) and, by the caller, to show orders synced from this seller's
+ * *other* devices, which never have a local row here. Best-effort — returns
+ * null and no-ops offline. Called on Queue tab focus / pull-to-refresh, not
+ * part of the write-side sync above.
  */
-export async function refreshOrderApprovalStatuses(): Promise<void> {
+export async function refreshOrderApprovalStatuses(): Promise<ServerOrder[] | null> {
   try {
     const {
       data: { session },
     } = await supabase.auth.getSession();
-    if (!session) return;
+    if (!session) {
+      console.error("refreshOrderApprovalStatuses: no session");
+      return null;
+    }
 
     const res = await fetch(`${API_BASE_URL}/api/orders?mine=1&limit=-1`, {
       headers: { Authorization: `Bearer ${session.access_token}` },
     });
-    if (!res.ok) return;
+    if (!res.ok) {
+      console.error(
+        "refreshOrderApprovalStatuses: server responded",
+        res.status,
+        await res.text().catch(() => ""),
+      );
+      return null;
+    }
 
-    const { data }: { data: MyOrderStatus[] } = await res.json();
+    const { data }: { data: ServerOrder[] } = await res.json();
     const updates = data
       .filter((o) => o.clientId)
       .map((o) => ({
@@ -226,7 +248,10 @@ export async function refreshOrderApprovalStatuses(): Promise<void> {
         await applyOrderItemAdjustments(order.clientId, order.items ?? []);
       }
     }
-  } catch {
-    // Offline or transient failure — local statuses stay as last known.
+
+    return data;
+  } catch (err) {
+    console.error("refreshOrderApprovalStatuses: failed", err);
+    return null;
   }
 }

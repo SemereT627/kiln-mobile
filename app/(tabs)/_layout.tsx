@@ -1,14 +1,18 @@
+import { useMemo } from "react";
 import { View, ActivityIndicator, StyleSheet } from "react-native";
 import { Redirect, Tabs } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAuth } from "@/context/auth-context";
 import { useAutoSync } from "@/hooks/use-auto-sync";
-import { colors } from "@/constants/theme";
+import { useTheme } from "@/context/theme-context";
+import type { ThemeColors } from "@/constants/theme";
 
 export default function TabsLayout() {
   const { session, loading } = useAuth();
   const insets = useSafeAreaInsets();
+  const { colors } = useTheme();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   useAutoSync();
 
   if (loading) {
@@ -77,23 +81,26 @@ export default function TabsLayout() {
   );
 }
 
-const styles = StyleSheet.create({
-  loading: {
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-    backgroundColor: colors.background,
-  },
-  tabBar: {
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: colors.border,
-    paddingTop: 8,
-  },
-  tabBarItem: {
-    paddingTop: 2,
-  },
-  tabBarLabel: {
-    fontSize: 11,
-    fontWeight: "600",
-  },
-});
+function makeStyles(colors: ThemeColors) {
+  return StyleSheet.create({
+    loading: {
+      flex: 1,
+      justifyContent: "center",
+      alignItems: "center",
+      backgroundColor: colors.background,
+    },
+    tabBar: {
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: colors.border,
+      backgroundColor: colors.surface,
+      paddingTop: 8,
+    },
+    tabBarItem: {
+      paddingTop: 2,
+    },
+    tabBarLabel: {
+      fontSize: 11,
+      fontWeight: "600",
+    },
+  });
+}

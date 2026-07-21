@@ -28,7 +28,9 @@ import {
   type PaymentMethod,
 } from "@/lib/db";
 import { runOrderSync } from "@/lib/sync";
-import { colors, radius, spacing, shadow } from "@/constants/theme";
+import { useTheme } from "@/context/theme-context";
+import { radius, spacing, getShadow } from "@/constants/theme";
+import type { ThemeColors } from "@/constants/theme";
 
 type CartLine = {
   ceramicId: string;
@@ -48,6 +50,8 @@ const PAYMENT_OPTIONS: { value: PaymentMethod; label: string; icon: keyof typeof
 
 export default function SellScreen() {
   const insets = useSafeAreaInsets();
+  const { colors, shadow } = useTheme();
+  const styles = useMemo(() => makeStyles(colors, shadow), [colors, shadow]);
   const [catalog, setCatalog] = useState<CachedCeramic[]>([]);
   const [pendingQty, setPendingQty] = useState<Record<string, number>>({});
   const [loadState, setLoadState] = useState<LoadState>("loading");
@@ -470,6 +474,8 @@ function SyncPill({
   lastSyncedAt: number | null;
   loadState: LoadState;
 }) {
+  const { colors, shadow } = useTheme();
+  const styles = useMemo(() => makeStyles(colors, shadow), [colors, shadow]);
   if (loadState === "error") {
     return (
       <View style={[styles.syncPill, styles.syncPillError]}>
@@ -495,6 +501,8 @@ function SyncPill({
 }
 
 function ErrorState({ onRetry }: { onRetry: () => void }) {
+  const { colors, shadow } = useTheme();
+  const styles = useMemo(() => makeStyles(colors, shadow), [colors, shadow]);
   return (
     <View style={styles.emptyWrap}>
       <Ionicons name="cloud-offline-outline" size={40} color={colors.textFaint} />
@@ -511,6 +519,8 @@ function ErrorState({ onRetry }: { onRetry: () => void }) {
 }
 
 function CatalogSkeleton() {
+  const { colors, shadow } = useTheme();
+  const styles = useMemo(() => makeStyles(colors, shadow), [colors, shadow]);
   return (
     <View style={{ paddingHorizontal: spacing.lg }}>
       {Array.from({ length: 6 }).map((_, i) => (
@@ -535,6 +545,8 @@ function CartBar({
   total: number;
   onPress: () => void;
 }) {
+  const { colors, shadow } = useTheme();
+  const styles = useMemo(() => makeStyles(colors, shadow), [colors, shadow]);
   const translateY = useRef(new Animated.Value(80)).current;
 
   useEffect(() => {
@@ -574,6 +586,8 @@ function CatalogRow({
   pendingQty: number;
   onPress: (item: CachedCeramic) => void;
 }) {
+  const { colors, shadow } = useTheme();
+  const styles = useMemo(() => makeStyles(colors, shadow), [colors, shadow]);
   const estimatedStock = item.currentStock - pendingQty;
   const isOut = estimatedStock <= 0;
   const isLow = !isOut && estimatedStock < 5;
@@ -624,7 +638,8 @@ function CatalogRow({
   );
 }
 
-const styles = StyleSheet.create({
+function makeStyles(colors: ThemeColors, shadow: ReturnType<typeof getShadow>) {
+  return StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
   header: {
     flexDirection: "row",
@@ -848,4 +863,5 @@ const styles = StyleSheet.create({
   },
   creditNoteText: { flex: 1, fontSize: 12, color: colors.warning },
   reviewTotal: { fontSize: 17, fontWeight: "800", color: colors.text, textAlign: "right", marginVertical: 12 },
-});
+  });
+}

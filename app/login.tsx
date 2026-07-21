@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -13,10 +13,14 @@ import { Redirect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAuth } from "@/context/auth-context";
-import { colors, radius, spacing } from "@/constants/theme";
+import { useTheme } from "@/context/theme-context";
+import { radius, spacing } from "@/constants/theme";
+import type { ThemeColors } from "@/constants/theme";
 
 export default function LoginScreen() {
   const insets = useSafeAreaInsets();
+  const { colors } = useTheme();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   const { session, loading, signIn } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -106,7 +110,8 @@ export default function LoginScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+function makeStyles(colors: ThemeColors) {
+  return StyleSheet.create({
   container: {
     flex: 1,
     justifyContent: "center",
@@ -155,6 +160,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     marginTop: spacing.xs,
   },
-  buttonDisabled: { opacity: 0.5 },
-  buttonText: { color: "#fff", fontWeight: "700", fontSize: 16 },
-});
+    buttonDisabled: { opacity: 0.5 },
+    buttonText: { color: "#fff", fontWeight: "700", fontSize: 16 },
+  });
+}
