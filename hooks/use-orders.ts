@@ -9,6 +9,7 @@ import { refreshOrderApprovalStatuses, runOrderSync, type ServerOrder } from "@/
 function serverOrderToPendingOrder(order: ServerOrder): PendingOrder {
   return {
     clientId: order.clientId as string,
+    serverId: order.id,
     paymentMethod: order.paymentMethod,
     bankAccount: order.bankAccount,
     notes: order.notes,

@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from "react";
-import { View, Text, SectionList, Pressable, StyleSheet } from "react-native";
+import { View, Text, FlatList, Pressable, StyleSheet } from "react-native";
 import { RefreshControl } from "react-native";
-import { useFocusEffect } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { discardOrder, getSyncIssue, type PendingOrder, type SyncIssue } from "@/lib/db";
@@ -12,44 +12,21 @@ import { OrderDetailSheet } from "@/components/order-detail-sheet";
 import { useTheme } from "@/context/theme-context";
 import { radius, spacing } from "@/constants/theme";
 import type { ThemeColors } from "@/constants/theme";
+import { groupOrdersByDate, type OrderDayGroup } from "@/lib/order-groups";
 
-/** Buckets orders into date sections the way a chat app would — Today,
- * Yesterday, then a plain date. Orders arrive pre-sorted by createdAt desc,
- * so same-day entries are always contiguous — no need to key by a map. */
-function groupByDate(orders: PendingOrder[], now: Date) {
-  const todayStr = now.toDateString();
-  const yesterday = new Date(now);
-  yesterday.setDate(now.getDate() - 1);
-  const yesterdayStr = yesterday.toDateString();
-
-  const sections: { title: string; data: PendingOrder[] }[] = [];
-  for (const order of orders) {
-    const created = new Date(order.createdAt);
-    const dayStr = created.toDateString();
-    let title: string;
-    if (dayStr === todayStr) title = "Today";
-    else if (dayStr === yesterdayStr) title = "Yesterday";
-    else {
-      title = created.toLocaleDateString(undefined, {
-        month: "long",
-        day: "numeric",
-        year: created.getFullYear() !== now.getFullYear() ? "numeric" : undefined,
-      });
-    }
-    const lastSection = sections[sections.length - 1];
-    if (lastSection && lastSection.title === title) {
-      lastSection.data.push(order);
-    } else {
-      sections.push({ title, data: [order] });
-    }
-  }
-  return sections;
-}
+/** One row in the flat list below: today's cards render inline (most
+ * common thing a seller checks, shouldn't cost an extra tap), every other
+ * day collapses to a single compact row that pushes to /queue/[date]. */
+type Row =
+  | { kind: "order"; order: PendingOrder; index: number }
+  | { kind: "day-row"; group: OrderDayGroup }
+  | { kind: "earlier-label" };
 
 export default function QueueScreen() {
   const insets = useSafeAreaInsets();
   const { colors } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
+  const router = useRouter();
   const { signOut } = useAuth();
   const { orders, loaded, refreshing, refresh, reload, lastSyncedAt } = useOrders();
   const [syncIssue, setSyncIssueState] = useState<SyncIssue | null>(null);
@@ -61,11 +38,29 @@ export default function QueueScreen() {
     }, []),
   );
 
-  const sections = useMemo(() => groupByDate(orders, new Date()), [orders]);
+  const groups = useMemo(() => groupOrdersByDate(orders, new Date()), [orders]);
+  const todayGroup = groups[0]?.title === "Today" ? groups[0] : null;
+  const otherGroups = todayGroup ? groups.slice(1) : groups;
+
+  const rows: Row[] = useMemo(() => {
+    const result: Row[] = [];
+    todayGroup?.data.forEach((order, index) => result.push({ kind: "order", order, index }));
+    if (otherGroups.length > 0) result.push({ kind: "earlier-label" });
+    otherGroups.forEach((group) => result.push({ kind: "day-row", group }));
+    return result;
+  }, [todayGroup, otherGroups]);
 
   async function handleDiscard(clientId: string) {
     await discardOrder(clientId);
     await reload();
+  }
+
+  async function handleRetrySync() {
+    // Covers the common case (transient network blip, token already
+    // refreshed) without forcing a full logout when that isn't necessary —
+    // Log Out stays for when it actually is (dead refresh token).
+    await refresh();
+    setSyncIssueState(await getSyncIssue());
   }
 
   return (
@@ -93,16 +88,24 @@ export default function QueueScreen() {
         <View style={styles.issueBanner}>
           <Ionicons name="warning-outline" size={16} color={colors.danger} />
           <Text style={styles.issueText}>{syncIssue.message}</Text>
+          <Pressable style={styles.issueButtonOutline} onPress={handleRetrySync}>
+            <Text style={styles.issueButtonOutlineText}>Retry</Text>
+          </Pressable>
           <Pressable style={styles.issueButton} onPress={signOut}>
             <Text style={styles.issueButtonText}>Log Out</Text>
           </Pressable>
         </View>
       )}
 
-      <SectionList
-        sections={sections}
-        keyExtractor={(o) => o.clientId}
-        stickySectionHeadersEnabled
+      <FlatList
+        data={rows}
+        keyExtractor={(row) =>
+          row.kind === "order"
+            ? row.order.clientId
+            : row.kind === "day-row"
+              ? row.group.dateKey
+              : "earlier-label"
+        }
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -127,16 +130,38 @@ export default function QueueScreen() {
             </View>
           ) : null
         }
-        renderSectionHeader={({ section }) => (
-          <View style={styles.sectionHeaderWrap}>
-            <View style={styles.sectionHeaderPill}>
-              <Text style={styles.sectionHeaderText}>{section.title}</Text>
-            </View>
-          </View>
-        )}
-        renderItem={({ item, index }) => (
-          <OrderCard order={item} index={index} onPress={setSelectedOrder} onDiscard={handleDiscard} />
-        )}
+        renderItem={({ item }) => {
+          if (item.kind === "order") {
+            return (
+              <OrderCard
+                order={item.order}
+                index={item.index}
+                onPress={setSelectedOrder}
+                onDiscard={handleDiscard}
+              />
+            );
+          }
+          if (item.kind === "earlier-label") {
+            return <Text style={styles.earlierLabel}>Earlier</Text>;
+          }
+          return (
+            <Pressable
+              style={({ pressed }) => [styles.dayRow, pressed && styles.dayRowPressed]}
+              onPress={() => router.push(`/queue/${encodeURIComponent(item.group.dateKey)}`)}
+            >
+              <View style={styles.dayRowIcon}>
+                <Ionicons name="calendar-outline" size={16} color={colors.textMuted} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.dayRowTitle}>{item.group.title}</Text>
+                <Text style={styles.dayRowSub}>
+                  {item.group.data.length} order{item.group.data.length !== 1 ? "s" : ""}
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={colors.textFaint} />
+            </Pressable>
+          );
+        }}
       />
 
       <OrderDetailSheet
@@ -180,26 +205,46 @@ function makeStyles(colors: ThemeColors) {
     paddingVertical: 6,
   },
   issueButtonText: { color: "#fff", fontWeight: "700", fontSize: 12 },
+  issueButtonOutline: {
+    borderWidth: 1,
+    borderColor: colors.danger,
+    borderRadius: radius.sm,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  issueButtonOutlineText: { color: colors.danger, fontWeight: "700", fontSize: 12 },
   emptyWrap: { alignItems: "center", marginTop: 72, paddingHorizontal: 32, gap: 4, flex: 1, justifyContent: "center" },
   emptyTitle: { fontSize: 15, fontWeight: "700", color: colors.text, marginTop: 12 },
   emptySubtitle: { fontSize: 13, color: colors.textMuted, textAlign: "center" },
-  sectionHeaderWrap: {
-    alignItems: "center",
-    backgroundColor: colors.background,
-    paddingVertical: spacing.sm,
-  },
-  sectionHeaderPill: {
-    backgroundColor: colors.surfaceMuted,
-    borderRadius: radius.pill,
-    paddingHorizontal: spacing.md,
-    paddingVertical: 4,
-  },
-  sectionHeaderText: {
+  earlierLabel: {
     fontSize: 11,
     fontWeight: "700",
     color: colors.textMuted,
     textTransform: "uppercase",
     letterSpacing: 0.4,
+    marginTop: spacing.lg,
+    marginBottom: spacing.sm,
   },
+  dayRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md,
+    backgroundColor: colors.surfaceMuted,
+    borderRadius: radius.lg,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.md,
+    marginBottom: spacing.sm,
+  },
+  dayRowPressed: { opacity: 0.7 },
+  dayRowIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: radius.md,
+    backgroundColor: colors.surface,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  dayRowTitle: { fontSize: 14, fontWeight: "700", color: colors.text },
+  dayRowSub: { fontSize: 12, color: colors.textMuted, marginTop: 1 },
   });
 }

@@ -1,10 +1,5 @@
 import { supabase, API_BASE_URL } from "@/lib/supabase";
 import {
-  getPendingSales,
-  markSyncing,
-  markSynced,
-  markRejected,
-  resetSyncingToPending,
   getPendingOrders,
   markOrdersSyncing,
   markOrderSynced,
@@ -12,11 +7,12 @@ import {
   resetOrdersSyncingToPending,
   updateOrderApprovalStatuses,
   applyOrderItemAdjustments,
+  setOrderServerId,
   setSyncIssue,
 } from "@/lib/db";
 
 type SyncResult =
-  | { clientId: string; status: "synced" }
+  | { clientId: string; status: "synced"; id: string }
   | { clientId: string; status: "rejected"; reason: string };
 
 /**
@@ -39,88 +35,13 @@ async function getSessionForSync() {
   return session;
 }
 
-let syncing = false;
-
-/**
- * Pushes all locally-queued sales to POST /api/sales/sync. Safe to call
- * repeatedly (NetInfo reconnect, app foreground, pull-to-refresh) — a sync
- * already in flight is skipped rather than run twice.
- */
-export async function runSync(): Promise<{ synced: number; rejected: number }> {
-  if (syncing) return { synced: 0, rejected: 0 };
-  syncing = true;
-
-  try {
-    // A previous sync attempt may have crashed mid-flight; those rows are
-    // safe to retry (the server dedupes by client_id).
-    await resetSyncingToPending();
-
-    const pending = await getPendingSales();
-    if (pending.length === 0) return { synced: 0, rejected: 0 };
-
-    const session = await getSessionForSync();
-    if (!session) return { synced: 0, rejected: 0 };
-
-    await markSyncing(pending.map((s) => s.clientId));
-
-    const res = await fetch(`${API_BASE_URL}/api/sales/sync`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${session.access_token}`,
-      },
-      body: JSON.stringify({
-        sales: pending.map((s) => ({
-          clientId: s.clientId,
-          ceramicId: s.ceramicId,
-          quantity: s.quantity,
-          priceAtSale: s.priceAtSale,
-          soldAt: s.soldAt,
-        })),
-      }),
-    });
-
-    if (!res.ok) {
-      // Network reachable but the request itself failed (e.g. 401 from an
-      // expired refresh) — leave rows as 'pending' for the next attempt.
-      if (res.status === 401) {
-        await setSyncIssue("Session expired. Log out and log back in to resume syncing.");
-      }
-      await resetSyncingToPending();
-      return { synced: 0, rejected: 0 };
-    }
-
-    await setSyncIssue(null);
-    const { results }: { results: SyncResult[] } = await res.json();
-
-    let synced = 0;
-    let rejected = 0;
-    for (const result of results) {
-      if (result.status === "synced") {
-        await markSynced(result.clientId);
-        synced++;
-      } else {
-        await markRejected(result.clientId, result.reason);
-        rejected++;
-      }
-    }
-    return { synced, rejected };
-  } catch {
-    // Offline mid-request or some other transient failure — rows already
-    // marked 'syncing' get reset on the next runSync() call.
-    await resetSyncingToPending();
-    return { synced: 0, rejected: 0 };
-  } finally {
-    syncing = false;
-  }
-}
-
 let orderSyncing = false;
 
 /**
- * Pushes all locally-queued orders to POST /api/orders/sync. Same
- * best-effort, safe-to-repeat shape as runSync() above — a sync already in
- * flight is skipped, and the server dedupes by client_id.
+ * Pushes all locally-queued orders to POST /api/orders/sync. Safe to call
+ * repeatedly (NetInfo reconnect, app foreground, pull-to-refresh) — a sync
+ * already in flight is skipped rather than run twice, and the server dedupes
+ * by client_id.
  */
 export async function runOrderSync(): Promise<{ synced: number; rejected: number }> {
   if (orderSyncing) return { synced: 0, rejected: 0 };
@@ -168,15 +89,28 @@ export async function runOrderSync(): Promise<{ synced: number; rejected: number
 
     let synced = 0;
     let rejected = 0;
+    const seen = new Set<string>();
     for (const result of results) {
+      seen.add(result.clientId);
       if (result.status === "synced") {
-        await markOrderSynced(result.clientId);
+        await markOrderSynced(result.clientId, result.id || null);
         synced++;
       } else {
         await markOrderRejectedSync(result.clientId, result.reason);
         rejected++;
       }
     }
+
+    // The server is expected to report a result for every order it received —
+    // if it dropped one (errored out mid-loop, response truncated), reset it
+    // to 'pending' now rather than leaving it stuck "Syncing…" until the next
+    // sync attempt's resetOrdersSyncingToPending() happens to catch it.
+    const unmatched = pending.filter((o) => !seen.has(o.clientId)).map((o) => o.clientId);
+    if (unmatched.length > 0) {
+      console.error("runOrderSync: server omitted results for", unmatched);
+      await resetOrdersSyncingToPending();
+    }
+
     return { synced, rejected };
   } catch (err) {
     console.error("runOrderSync: request failed", err);
@@ -188,6 +122,7 @@ export async function runOrderSync(): Promise<{ synced: number; rejected: number
 }
 
 export type ServerOrder = {
+  id: string;
   clientId: string | null;
   status: "pending" | "approved" | "rejected";
   rejectionReason: string | null;
@@ -244,6 +179,12 @@ export async function refreshOrderApprovalStatuses(): Promise<ServerOrder[] | nu
     await updateOrderApprovalStatuses(updates);
 
     for (const order of data) {
+      if (order.clientId) {
+        // Backfills rows that synced before server_id tracking existed, or
+        // whose sync response was lost after the server had already
+        // committed — this refresh is the fallback path either way.
+        await setOrderServerId(order.clientId, order.id);
+      }
       if (order.status === "approved" && order.clientId) {
         await applyOrderItemAdjustments(order.clientId, order.items ?? []);
       }

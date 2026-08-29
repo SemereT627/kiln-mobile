@@ -1,11 +1,11 @@
 import { useEffect, useRef } from "react";
 import { AppState } from "react-native";
 import NetInfo from "@react-native-community/netinfo";
-import { runSync, runOrderSync } from "@/lib/sync";
+import { runOrderSync } from "@/lib/sync";
 import { useAuth } from "@/context/auth-context";
 
 async function syncAll() {
-  await Promise.all([runSync(), runOrderSync()]);
+  await runOrderSync();
 }
 
 /** Triggers the sync engine on reconnect and on app foreground. */

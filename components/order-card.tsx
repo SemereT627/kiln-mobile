@@ -134,6 +134,11 @@ export function OrderCard({
             {order.items.length} item{order.items.length !== 1 ? "s" : ""} · {formatQty(quantity)} m²
             total
           </Text>
+          {order.approvalStatus !== "approved" && (
+            <Text style={styles.estimateNote}>
+              Estimated — final total set when approved
+            </Text>
+          )}
         </View>
 
         <View style={styles.metaRow}>
@@ -231,6 +236,7 @@ function makeStyles(colors: ThemeColors, shadow: ReturnType<typeof getShadow>) {
     total: { fontSize: 22, fontWeight: "800", color: colors.text },
     totalCurrency: { fontSize: 13, fontWeight: "700", color: colors.textMuted },
     totalsSub: { fontSize: 12, color: colors.textMuted, marginTop: 1 },
+    estimateNote: { fontSize: 11, color: colors.textFaint, marginTop: 3, fontStyle: "italic" },
 
     metaRow: {
       flexDirection: "row",

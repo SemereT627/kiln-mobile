@@ -2,35 +2,12 @@ import * as SQLite from "expo-sqlite";
 
 export type SyncStatus = "pending" | "syncing" | "synced" | "rejected";
 
-export type PendingSale = {
-  clientId: string;
-  ceramicId: string;
-  ceramicName: string;
-  quantity: number;
-  priceAtSale: number | null;
-  soldAt: string;
-  status: SyncStatus;
-  failReason: string | null;
-  createdAt: string;
-};
-
 let dbPromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
 function getDb() {
   if (!dbPromise) {
     dbPromise = SQLite.openDatabaseAsync("acsm-sales.db").then(async (db) => {
       await db.execAsync(`
-        CREATE TABLE IF NOT EXISTS pending_sales (
-          client_id TEXT PRIMARY KEY NOT NULL,
-          ceramic_id TEXT NOT NULL,
-          ceramic_name TEXT NOT NULL,
-          quantity REAL NOT NULL,
-          price_at_sale REAL,
-          sold_at TEXT NOT NULL,
-          status TEXT NOT NULL DEFAULT 'pending',
-          fail_reason TEXT,
-          created_at TEXT NOT NULL
-        );
         CREATE TABLE IF NOT EXISTS catalog_cache (
           id TEXT PRIMARY KEY NOT NULL,
           data TEXT NOT NULL
@@ -59,6 +36,10 @@ function getDb() {
           issue TEXT,
           issue_at TEXT
         );
+        CREATE TABLE IF NOT EXISTS preferences (
+          key TEXT PRIMARY KEY NOT NULL,
+          value TEXT NOT NULL
+        );
       `);
       // This device's bundled SQLite doesn't support ADD COLUMN IF NOT
       // EXISTS — added defensively so re-running on an already-migrated
@@ -66,6 +47,10 @@ function getDb() {
       for (const alterStatement of [
         "ALTER TABLE pending_order_items ADD COLUMN final_quantity REAL",
         "ALTER TABLE pending_order_items ADD COLUMN final_price_at_sale REAL",
+        // The real server-side orders.id, learned once this order syncs —
+        // needed to call order-scoped endpoints (e.g. return requests)
+        // against an order this device originated.
+        "ALTER TABLE pending_orders ADD COLUMN server_id TEXT",
       ]) {
         try {
           await db.execAsync(alterStatement);
@@ -77,116 +62,6 @@ function getDb() {
     });
   }
   return dbPromise;
-}
-
-function rowToSale(row: any): PendingSale {
-  return {
-    clientId: row.client_id,
-    ceramicId: row.ceramic_id,
-    ceramicName: row.ceramic_name,
-    quantity: row.quantity,
-    priceAtSale: row.price_at_sale,
-    soldAt: row.sold_at,
-    status: row.status,
-    failReason: row.fail_reason,
-    createdAt: row.created_at,
-  };
-}
-
-export async function enqueueSale(input: {
-  clientId: string;
-  ceramicId: string;
-  ceramicName: string;
-  quantity: number;
-  priceAtSale: number | null;
-  soldAt: string;
-}) {
-  const db = await getDb();
-  await db.runAsync(
-    `INSERT INTO pending_sales
-      (client_id, ceramic_id, ceramic_name, quantity, price_at_sale, sold_at, status, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)`,
-    [
-      input.clientId,
-      input.ceramicId,
-      input.ceramicName,
-      input.quantity,
-      input.priceAtSale,
-      input.soldAt,
-      new Date().toISOString(),
-    ],
-  );
-}
-
-export async function getAllSales(): Promise<PendingSale[]> {
-  const db = await getDb();
-  const rows = await db.getAllAsync(
-    "SELECT * FROM pending_sales ORDER BY created_at DESC",
-  );
-  return rows.map(rowToSale);
-}
-
-export async function getPendingSales(): Promise<PendingSale[]> {
-  const db = await getDb();
-  const rows = await db.getAllAsync(
-    "SELECT * FROM pending_sales WHERE status IN ('pending', 'syncing') ORDER BY created_at ASC",
-  );
-  return rows.map(rowToSale);
-}
-
-export async function markSyncing(clientIds: string[]) {
-  if (clientIds.length === 0) return;
-  const db = await getDb();
-  const placeholders = clientIds.map(() => "?").join(",");
-  await db.runAsync(
-    `UPDATE pending_sales SET status = 'syncing' WHERE client_id IN (${placeholders})`,
-    clientIds,
-  );
-}
-
-export async function markSynced(clientId: string) {
-  const db = await getDb();
-  // Keep synced rows around for the rep's visible history instead of
-  // deleting immediately; they're cheap and useful for a quick audit trail.
-  await db.runAsync(
-    "UPDATE pending_sales SET status = 'synced', fail_reason = NULL WHERE client_id = ?",
-    [clientId],
-  );
-}
-
-export async function markRejected(clientId: string, reason: string) {
-  const db = await getDb();
-  await db.runAsync(
-    "UPDATE pending_sales SET status = 'rejected', fail_reason = ? WHERE client_id = ?",
-    [reason, clientId],
-  );
-}
-
-/** Revert stuck 'syncing' rows back to 'pending' (e.g. after a crash mid-sync). */
-export async function resetSyncingToPending() {
-  const db = await getDb();
-  await db.runAsync(
-    "UPDATE pending_sales SET status = 'pending' WHERE status = 'syncing'",
-  );
-}
-
-export async function discardSale(clientId: string) {
-  const db = await getDb();
-  await db.runAsync("DELETE FROM pending_sales WHERE client_id = ?", [
-    clientId,
-  ]);
-}
-
-/** Sum of this device's not-yet-synced quantities per ceramic, for the
- * "estimated stock" display — the real check only happens server-side. One
- * query for the whole catalog instead of one per row. */
-export async function getUnsyncedQuantities(): Promise<Record<string, number>> {
-  const db = await getDb();
-  const rows = await db.getAllAsync<{ ceramic_id: string; total: number }>(
-    `SELECT ceramic_id, SUM(quantity) as total FROM pending_sales
-     WHERE status IN ('pending', 'syncing') GROUP BY ceramic_id`,
-  );
-  return Object.fromEntries(rows.map((r) => [r.ceramic_id, r.total]));
 }
 
 export type CachedCeramic = {
@@ -240,6 +115,7 @@ export type OrderCartItem = {
 
 export type PendingOrder = {
   clientId: string;
+  serverId: string | null;
   paymentMethod: PaymentMethod;
   bankAccount: string | null;
   notes: string | null;
@@ -251,9 +127,36 @@ export type PendingOrder = {
   items: OrderCartItem[];
 };
 
-function rowToOrder(row: any, items: OrderCartItem[]): PendingOrder {
+/** Raw shape of a `pending_orders` row, as SQLite returns it (snake_case). */
+type PendingOrderRow = {
+  client_id: string;
+  server_id: string | null;
+  payment_method: PaymentMethod;
+  bank_account: string | null;
+  notes: string | null;
+  status: SyncStatus;
+  fail_reason: string | null;
+  approval_status: OrderApprovalStatus | null;
+  rejection_reason: string | null;
+  created_at: string;
+};
+
+/** Raw shape of a `pending_order_items` row, as SQLite returns it. */
+type PendingOrderItemRow = {
+  id: number;
+  order_client_id: string;
+  ceramic_id: string;
+  ceramic_name: string;
+  quantity: number;
+  price_at_sale: number | null;
+  final_quantity: number | null;
+  final_price_at_sale: number | null;
+};
+
+function rowToOrder(row: PendingOrderRow, items: OrderCartItem[]): PendingOrder {
   return {
     clientId: row.client_id,
+    serverId: row.server_id,
     paymentMethod: row.payment_method,
     bankAccount: row.bank_account,
     notes: row.notes,
@@ -266,8 +169,8 @@ function rowToOrder(row: any, items: OrderCartItem[]): PendingOrder {
   };
 }
 
-/** Queues a multi-item order awaiting admin approval — same offline-first
- * shape as enqueueSale, one level deeper for line items. */
+/** Queues a multi-item order awaiting admin approval — this device's only
+ * offline-first write path (orders are the sole way a sale reaches Sales). */
 export async function enqueueOrder(input: {
   clientId: string;
   paymentMethod: PaymentMethod;
@@ -300,10 +203,13 @@ export async function enqueueOrder(input: {
   });
 }
 
-async function attachOrderItems(db: SQLite.SQLiteDatabase, orders: any[]): Promise<PendingOrder[]> {
+async function attachOrderItems(
+  db: SQLite.SQLiteDatabase,
+  orders: PendingOrderRow[],
+): Promise<PendingOrder[]> {
   const result: PendingOrder[] = [];
   for (const row of orders) {
-    const itemRows = await db.getAllAsync<any>(
+    const itemRows = await db.getAllAsync<PendingOrderItemRow>(
       "SELECT * FROM pending_order_items WHERE order_client_id = ?",
       [row.client_id],
     );
@@ -326,7 +232,7 @@ async function attachOrderItems(db: SQLite.SQLiteDatabase, orders: any[]): Promi
 
 export async function getAllOrders(): Promise<PendingOrder[]> {
   const db = await getDb();
-  const rows = await db.getAllAsync<any>(
+  const rows = await db.getAllAsync<PendingOrderRow>(
     "SELECT * FROM pending_orders ORDER BY created_at DESC",
   );
   return attachOrderItems(db, rows);
@@ -334,7 +240,7 @@ export async function getAllOrders(): Promise<PendingOrder[]> {
 
 export async function getPendingOrders(): Promise<PendingOrder[]> {
   const db = await getDb();
-  const rows = await db.getAllAsync<any>(
+  const rows = await db.getAllAsync<PendingOrderRow>(
     "SELECT * FROM pending_orders WHERE status IN ('pending', 'syncing') ORDER BY created_at ASC",
   );
   return attachOrderItems(db, rows);
@@ -350,11 +256,21 @@ export async function markOrdersSyncing(clientIds: string[]) {
   );
 }
 
-export async function markOrderSynced(clientId: string) {
+export async function markOrderSynced(clientId: string, serverId: string | null) {
   const db = await getDb();
   await db.runAsync(
-    "UPDATE pending_orders SET status = 'synced', fail_reason = NULL WHERE client_id = ?",
-    [clientId],
+    "UPDATE pending_orders SET status = 'synced', fail_reason = NULL, server_id = COALESCE(?, server_id) WHERE client_id = ?",
+    [serverId, clientId],
+  );
+}
+
+/** Backfills server_id for a local row once the server-merge path learns it
+ * (e.g. a row that synced before this device tracked server_id at all). */
+export async function setOrderServerId(clientId: string, serverId: string) {
+  const db = await getDb();
+  await db.runAsync(
+    "UPDATE pending_orders SET server_id = ? WHERE client_id = ? AND server_id IS NULL",
+    [serverId, clientId],
   );
 }
 
@@ -397,8 +313,11 @@ export async function updateOrderApprovalStatuses(
 
 /** Writes back the admin-approved final quantity/price for an order's line
  * items, matched to local rows by ceramicId within the order (there's no
- * per-item server id synced to the device). Only called for orders whose
- * approval_status just turned 'approved' — see refreshOrderApprovalStatuses. */
+ * per-item server id synced to the device). Called on every refresh for any
+ * already-approved order (level-triggered, not just on the pending→approved
+ * transition) — safe because it's idempotent, always overwriting with the
+ * current server values rather than accumulating. See
+ * refreshOrderApprovalStatuses. */
 export async function applyOrderItemAdjustments(
   clientId: string,
   items: { ceramicId: string; quantity: number; priceAtSale: number }[],
@@ -414,8 +333,8 @@ export async function applyOrderItemAdjustments(
   }
 }
 
-/** Sum of this device's not-yet-synced order quantities per ceramic — see
- * getUnsyncedQuantities. */
+/** Sum of this device's not-yet-synced order quantities per ceramic, for the
+ * "estimated stock" display — the real check only happens server-side. */
 export async function getUnsyncedOrderQuantities(): Promise<Record<string, number>> {
   const db = await getDb();
   const rows = await db.getAllAsync<{ ceramic_id: string; total: number }>(
@@ -449,4 +368,25 @@ export async function getSyncIssue(): Promise<SyncIssue | null> {
   );
   if (!row?.issue) return null;
   return { message: row.issue, at: row.issue_at ?? new Date().toISOString() };
+}
+
+/** Generic key/value store for small, non-sensitive local preferences (e.g.
+ * theme) — plain on-disk SQLite, not the keychain-backed SecureStore used
+ * for the session, so reads/writes here are cheap. */
+export async function getPreference(key: string): Promise<string | null> {
+  const db = await getDb();
+  const row = await db.getFirstAsync<{ value: string }>(
+    "SELECT value FROM preferences WHERE key = ?",
+    [key],
+  );
+  return row?.value ?? null;
+}
+
+export async function setPreference(key: string, value: string): Promise<void> {
+  const db = await getDb();
+  await db.runAsync(
+    `INSERT INTO preferences (key, value) VALUES (?, ?)
+     ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
+    [key, value],
+  );
 }

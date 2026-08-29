@@ -22,6 +22,7 @@ import {
   PAYMENT,
   REASON_LABEL,
 } from "./order-card";
+import { ReturnRequestSheet } from "./return-request-sheet";
 
 const SCREEN_HEIGHT = Dimensions.get("window").height;
 
@@ -40,6 +41,7 @@ export function OrderDetailSheet({
   const SYNC_STATUS = useMemo(() => getSyncStatusMap(colors), [colors]);
   const APPROVAL = useMemo(() => getApprovalMap(colors), [colors]);
   const [mounted, setMounted] = useState(false);
+  const [returnSheetOpen, setReturnSheetOpen] = useState(false);
   const translateY = useRef(new Animated.Value(SCREEN_HEIGHT)).current;
   const backdrop = useRef(new Animated.Value(0)).current;
   const lastOrder = useRef<PendingOrder | null>(null);
@@ -107,6 +109,11 @@ export function OrderDetailSheet({
             {shown.items.length} item{shown.items.length !== 1 ? "s" : ""} · {formatQty(quantity)} m²
             total
           </Text>
+          {shown.approvalStatus !== "approved" && (
+            <Text style={styles.estimateNote}>
+              Estimated — final total set when approved
+            </Text>
+          )}
 
           {shown.status === "synced" && shown.approvalStatus && (
             <View
@@ -188,6 +195,16 @@ export function OrderDetailSheet({
             })}
           </View>
 
+          {shown.status === "synced" && shown.approvalStatus === "approved" && shown.serverId && (
+            <Pressable
+              style={styles.returnButton}
+              onPress={() => setReturnSheetOpen(true)}
+            >
+              <Ionicons name="return-up-back-outline" size={15} color={colors.primary} />
+              <Text style={styles.returnButtonText}>Request Return</Text>
+            </Pressable>
+          )}
+
           {shown.status === "rejected" && (
             <>
               <Text style={styles.reason}>
@@ -207,6 +224,13 @@ export function OrderDetailSheet({
           )}
         </ScrollView>
       </Animated.View>
+
+      <ReturnRequestSheet
+        orderServerId={shown.serverId}
+        visible={returnSheetOpen}
+        onClose={() => setReturnSheetOpen(false)}
+        onSubmitted={() => {}}
+      />
     </Modal>
   );
 }
@@ -248,6 +272,7 @@ function makeStyles(colors: ThemeColors, shadow: ReturnType<typeof getShadow>) {
   total: { fontSize: 30, fontWeight: "800", color: colors.text, marginTop: spacing.sm },
   totalCurrency: { fontSize: 15, fontWeight: "700", color: colors.textMuted },
   totalsSub: { fontSize: 13, color: colors.textMuted, marginTop: 2 },
+  estimateNote: { fontSize: 12, color: colors.textFaint, marginTop: 3, fontStyle: "italic" },
   approvalPill: {
     alignSelf: "flex-start",
     borderRadius: radius.pill,
@@ -294,6 +319,19 @@ function makeStyles(colors: ThemeColors, shadow: ReturnType<typeof getShadow>) {
   itemQtyOriginal: { textDecorationLine: "line-through", color: colors.textFaint, fontWeight: "400" },
   itemQtyFinal: { color: colors.warning },
   itemLineTotal: { fontSize: 12, color: colors.textMuted, marginTop: 1 },
+
+  returnButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    marginTop: spacing.lg,
+    borderWidth: 1,
+    borderColor: colors.primary,
+    borderRadius: radius.md,
+    paddingVertical: spacing.md,
+  },
+  returnButtonText: { color: colors.primary, fontWeight: "700", fontSize: 14 },
 
   reason: { fontSize: 13, color: colors.danger, marginTop: spacing.lg },
   discardButton: {

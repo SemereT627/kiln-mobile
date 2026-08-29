@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { useColorScheme } from "react-native";
-import * as SecureStore from "expo-secure-store";
+import { getPreference, setPreference } from "@/lib/db";
 import { lightColors, darkColors, getShadow, type ThemeColors } from "@/constants/theme";
 
 type Scheme = "light" | "dark";
@@ -19,13 +19,14 @@ const ThemeContext = createContext<ThemeContextValue | null>(null);
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const systemScheme = useColorScheme();
+  // Render immediately with the system scheme as a first-launch default —
+  // the persisted choice (if any) swaps in a moment later once SQLite
+  // resolves, instead of blocking the whole app behind a blank screen.
   const [scheme, setSchemeState] = useState<Scheme>(systemScheme === "dark" ? "dark" : "light");
-  const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
-    SecureStore.getItemAsync(STORAGE_KEY).then((saved) => {
+    getPreference(STORAGE_KEY).then((saved) => {
       if (saved === "light" || saved === "dark") setSchemeState(saved);
-      setLoaded(true);
     });
     // Only ever read the persisted choice once on mount — the system
     // scheme is just the first-launch default, not a live override.
@@ -34,14 +35,12 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   function setScheme(next: Scheme) {
     setSchemeState(next);
-    SecureStore.setItemAsync(STORAGE_KEY, next);
+    setPreference(STORAGE_KEY, next);
   }
 
   function toggleTheme() {
     setScheme(scheme === "dark" ? "light" : "dark");
   }
-
-  if (!loaded) return null;
 
   return (
     <ThemeContext.Provider

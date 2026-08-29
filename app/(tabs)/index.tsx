@@ -12,6 +12,7 @@ import {
   Platform,
   Image,
   Animated,
+  Alert,
 } from "react-native";
 import * as Crypto from "expo-crypto";
 import { Ionicons } from "@expo/vector-icons";
@@ -21,7 +22,6 @@ import { API_BASE_URL } from "@/lib/supabase";
 import {
   cacheCatalog,
   getCachedCatalog,
-  getUnsyncedQuantities,
   getUnsyncedOrderQuantities,
   enqueueOrder,
   type CachedCeramic,
@@ -42,9 +42,17 @@ type CartLine = {
 
 type LoadState = "loading" | "ready" | "error";
 
-const PAYMENT_OPTIONS: { value: PaymentMethod; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
+const PAYMENT_OPTIONS: {
+  value: PaymentMethod;
+  label: string;
+  icon: keyof typeof Ionicons.glyphMap;
+}[] = [
   { value: "cash", label: "Cash", icon: "cash-outline" },
-  { value: "bank_transfer", label: "Bank Transfer", icon: "swap-horizontal-outline" },
+  {
+    value: "bank_transfer",
+    label: "Bank Transfer",
+    icon: "swap-horizontal-outline",
+  },
   { value: "credit", label: "Pending / Credit", icon: "time-outline" },
 ];
 
@@ -60,6 +68,7 @@ export default function SellScreen() {
   const [selected, setSelected] = useState<CachedCeramic | null>(null);
   const [quantity, setQuantity] = useState("");
   const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
+  const [refreshFailed, setRefreshFailed] = useState(false);
 
   const [cart, setCart] = useState<CartLine[]>([]);
   const [reviewOpen, setReviewOpen] = useState(false);
@@ -69,15 +78,8 @@ export default function SellScreen() {
   const [submitting, setSubmitting] = useState(false);
 
   const loadPendingQuantities = useCallback(async () => {
-    const [sales, orders] = await Promise.all([
-      getUnsyncedQuantities(),
-      getUnsyncedOrderQuantities(),
-    ]);
-    const merged: Record<string, number> = { ...sales };
-    for (const [id, qty] of Object.entries(orders)) {
-      merged[id] = (merged[id] ?? 0) + qty;
-    }
-    setPendingQty(merged);
+    const orders = await getUnsyncedOrderQuantities();
+    setPendingQty(orders);
   }, []);
 
   const loadCatalog = useCallback(async (isInitial: boolean) => {
@@ -100,11 +102,15 @@ export default function SellScreen() {
       setCatalog(items);
       setLastSyncedAt(Date.now());
       setLoadState("ready");
+      setRefreshFailed(false);
     } catch {
       const cached = await getCachedCatalog();
       if (cached.length > 0) {
         setCatalog(cached);
         setLoadState("ready");
+        // Only surface this when it's a refresh of an already-loaded catalog —
+        // the initial load has its own dedicated "error" empty state.
+        if (!isInitial) setRefreshFailed(true);
       } else if (isInitial) {
         setLoadState("error");
       }
@@ -143,7 +149,9 @@ export default function SellScreen() {
       const existing = prev.find((l) => l.ceramicId === selected.id);
       if (existing) {
         return prev.map((l) =>
-          l.ceramicId === selected.id ? { ...l, quantity: l.quantity + qty } : l,
+          l.ceramicId === selected.id
+            ? { ...l, quantity: l.quantity + qty }
+            : l,
         );
       }
       return [
@@ -167,7 +175,9 @@ export default function SellScreen() {
 
   function updateCartQuantity(ceramicId: string, qty: number) {
     setCart((prev) =>
-      prev.map((l) => (l.ceramicId === ceramicId ? { ...l, quantity: qty } : l)),
+      prev.map((l) =>
+        l.ceramicId === ceramicId ? { ...l, quantity: qty } : l,
+      ),
     );
   }
 
@@ -182,19 +192,30 @@ export default function SellScreen() {
 
     setSubmitting(true);
     const clientId = Crypto.randomUUID();
-    await enqueueOrder({
-      clientId,
-      paymentMethod,
-      bankAccount: paymentMethod === "bank_transfer" ? bankAccount.trim() : null,
-      notes: notes.trim() || null,
-      items: cart.map((l) => ({
-        ceramicId: l.ceramicId,
-        ceramicName: l.ceramicName,
-        quantity: l.quantity,
-        priceAtSale: l.priceAtSale,
-      })),
-    });
-    setSubmitting(false);
+    try {
+      await enqueueOrder({
+        clientId,
+        paymentMethod,
+        bankAccount:
+          paymentMethod === "bank_transfer" ? bankAccount.trim() : null,
+        notes: notes.trim() || null,
+        items: cart.map((l) => ({
+          ceramicId: l.ceramicId,
+          ceramicName: l.ceramicName,
+          quantity: l.quantity,
+          priceAtSale: l.priceAtSale,
+        })),
+      });
+    } catch (err) {
+      console.error("submitOrder: enqueueOrder failed", err);
+      Alert.alert(
+        "Couldn't save order",
+        "Something went wrong saving this order on your device. Please try again.",
+      );
+      return;
+    } finally {
+      setSubmitting(false);
+    }
     setCart([]);
     setReviewOpen(false);
     setPaymentMethod("cash");
@@ -204,6 +225,20 @@ export default function SellScreen() {
     // Best-effort immediate sync; if offline this just stays queued.
     runOrderSync().then(loadPendingQuantities);
   }
+
+  // Non-blocking heads-up when the entered quantity exceeds this device's
+  // best estimate of what's left (server does the real oversell check at
+  // sync time — this can be wrong if another device already sold stock).
+  const selectedPendingQty = selected ? (pendingQty[selected.id] ?? 0) : 0;
+  const selectedCartQty = selected
+    ? (cart.find((l) => l.ceramicId === selected.id)?.quantity ?? 0)
+    : 0;
+  const estimatedAvailable = selected
+    ? selected.currentStock - selectedPendingQty - selectedCartQty
+    : 0;
+  const enteredQty = parseFloat(quantity) || 0;
+  const exceedsEstimatedStock =
+    !!selected && enteredQty > 0 && enteredQty > estimatedAvailable;
 
   const filtered = useMemo(
     () =>
@@ -222,8 +257,27 @@ export default function SellScreen() {
         <SyncPill lastSyncedAt={lastSyncedAt} loadState={loadState} />
       </View>
 
+      {refreshFailed && (
+        <View style={styles.issueBanner}>
+          <Ionicons
+            name="cloud-offline-outline"
+            size={16}
+            color={colors.danger}
+          />
+          <Text style={styles.issueText}>
+            Couldn't refresh — showing the last saved catalog. Stock may be out
+            of date.
+          </Text>
+        </View>
+      )}
+
       <View style={styles.searchWrap}>
-        <Ionicons name="search" size={18} color={colors.textFaint} style={styles.searchIcon} />
+        <Ionicons
+          name="search"
+          size={18}
+          color={colors.textFaint}
+          style={styles.searchIcon}
+        />
         <TextInput
           style={styles.search}
           placeholder="Search by name or product ID"
@@ -271,7 +325,11 @@ export default function SellScreen() {
           )}
           ListEmptyComponent={
             <View style={styles.emptyWrap}>
-              <Ionicons name="cube-outline" size={40} color={colors.textFaint} />
+              <Ionicons
+                name="cube-outline"
+                size={40}
+                color={colors.textFaint}
+              />
               <Text style={styles.emptyTitle}>No products found</Text>
               <Text style={styles.emptySubtitle}>
                 {search
@@ -295,8 +353,16 @@ export default function SellScreen() {
           style={styles.modalOverlay}
           behavior={Platform.OS === "ios" ? "padding" : "height"}
         >
-          <Pressable style={styles.modalScrim} onPress={() => setSelected(null)} />
-          <View style={[styles.modalCard, { paddingBottom: insets.bottom + spacing.lg }]}>
+          <Pressable
+            style={styles.modalScrim}
+            onPress={() => setSelected(null)}
+          />
+          <View
+            style={[
+              styles.modalCard,
+              { paddingBottom: insets.bottom + spacing.lg },
+            ]}
+          >
             <View style={styles.modalHandle} />
             <Text style={styles.modalTitle}>{selected?.name}</Text>
             <Text style={styles.modalSubtitle}>
@@ -312,6 +378,20 @@ export default function SellScreen() {
               onChangeText={setQuantity}
               autoFocus
             />
+            {exceedsEstimatedStock && (
+              <View style={styles.stockWarning}>
+                <Ionicons
+                  name="warning-outline"
+                  size={14}
+                  color={colors.warning}
+                />
+                <Text style={styles.stockWarningText}>
+                  Only ~{estimatedAvailable.toFixed(2)}{" "}
+                  {selected?.measurementUnit} estimated left — the server will
+                  reject this if stock ran out.
+                </Text>
+              </View>
+            )}
             <View style={styles.modalActions}>
               <Pressable
                 style={[styles.button, styles.buttonSecondary]}
@@ -320,7 +400,11 @@ export default function SellScreen() {
                 <Text style={styles.buttonSecondaryText}>Cancel</Text>
               </Pressable>
               <Pressable
-                style={[styles.button, styles.buttonPrimary, !quantity && styles.buttonDisabled]}
+                style={[
+                  styles.button,
+                  styles.buttonPrimary,
+                  !quantity && styles.buttonDisabled,
+                ]}
                 onPress={addToCart}
                 disabled={!quantity}
               >
@@ -334,7 +418,13 @@ export default function SellScreen() {
       {/* Review order / payment method / submit */}
       <Modal visible={reviewOpen} animationType="slide">
         <KeyboardAvoidingView
-          style={[styles.reviewContainer, { paddingTop: insets.top + spacing.lg, paddingBottom: insets.bottom + spacing.lg }]}
+          style={[
+            styles.reviewContainer,
+            {
+              paddingTop: insets.top + spacing.lg,
+              paddingBottom: insets.bottom + spacing.lg,
+            },
+          ]}
           behavior={Platform.OS === "ios" ? "padding" : "height"}
         >
           <View style={styles.reviewHeader}>
@@ -358,18 +448,32 @@ export default function SellScreen() {
                 </View>
                 <Pressable
                   style={styles.qtyStepper}
-                  onPress={() => updateCartQuantity(item.ceramicId, Math.max(0.01, item.quantity - 1))}
+                  onPress={() =>
+                    updateCartQuantity(
+                      item.ceramicId,
+                      Math.max(0.01, item.quantity - 1),
+                    )
+                  }
                 >
                   <Ionicons name="remove" size={16} color={colors.text} />
                 </Pressable>
                 <Pressable
                   style={styles.qtyStepper}
-                  onPress={() => updateCartQuantity(item.ceramicId, item.quantity + 1)}
+                  onPress={() =>
+                    updateCartQuantity(item.ceramicId, item.quantity + 1)
+                  }
                 >
                   <Ionicons name="add" size={16} color={colors.text} />
                 </Pressable>
-                <Pressable onPress={() => removeFromCart(item.ceramicId)} hitSlop={8}>
-                  <Ionicons name="trash-outline" size={18} color={colors.danger} />
+                <Pressable
+                  onPress={() => removeFromCart(item.ceramicId)}
+                  hitSlop={8}
+                >
+                  <Ionicons
+                    name="trash-outline"
+                    size={18}
+                    color={colors.danger}
+                  />
                 </Pressable>
               </View>
             )}
@@ -389,12 +493,15 @@ export default function SellScreen() {
                 <Ionicons
                   name={opt.icon}
                   size={16}
-                  color={paymentMethod === opt.value ? "#fff" : colors.textMuted}
+                  color={
+                    paymentMethod === opt.value ? "#fff" : colors.textMuted
+                  }
                 />
                 <Text
                   style={[
                     styles.paymentOptionText,
-                    paymentMethod === opt.value && styles.paymentOptionTextActive,
+                    paymentMethod === opt.value &&
+                      styles.paymentOptionTextActive,
                   ]}
                 >
                   {opt.label}
@@ -415,9 +522,14 @@ export default function SellScreen() {
 
           {paymentMethod === "credit" && (
             <View style={styles.creditNote}>
-              <Ionicons name="information-circle-outline" size={16} color={colors.warning} />
+              <Ionicons
+                name="information-circle-outline"
+                size={16}
+                color={colors.warning}
+              />
               <Text style={styles.creditNoteText}>
-                This order will be flagged for the admin as payment not yet received.
+                This order will be flagged for the admin as payment not yet
+                received.
               </Text>
             </View>
           )}
@@ -431,7 +543,9 @@ export default function SellScreen() {
             multiline
           />
 
-          <Text style={styles.reviewTotal}>Total: {cartTotal.toFixed(2)} ETB</Text>
+          <Text style={styles.reviewTotal}>
+            Total: {cartTotal.toFixed(2)} ETB
+          </Text>
 
           <View style={styles.modalActions}>
             <Pressable
@@ -467,6 +581,19 @@ export default function SellScreen() {
   );
 }
 
+/** "2m ago" / "1h ago" style relative time — lets a seller tell at a glance
+ * how stale the shown stock might be, not just that it's cached at all. */
+function formatRelativeTime(fromMs: number, nowMs: number): string {
+  const diffSec = Math.max(0, Math.floor((nowMs - fromMs) / 1000));
+  if (diffSec < 60) return "just now";
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `${diffHr}h ago`;
+  const diffDay = Math.floor(diffHr / 24);
+  return `${diffDay}d ago`;
+}
+
 function SyncPill({
   lastSyncedAt,
   loadState,
@@ -476,11 +603,25 @@ function SyncPill({
 }) {
   const { colors, shadow } = useTheme();
   const styles = useMemo(() => makeStyles(colors, shadow), [colors, shadow]);
+  const [now, setNow] = useState(Date.now());
+
+  useEffect(() => {
+    if (!lastSyncedAt) return;
+    const id = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, [lastSyncedAt]);
+
   if (loadState === "error") {
     return (
       <View style={[styles.syncPill, styles.syncPillError]}>
-        <Ionicons name="cloud-offline-outline" size={12} color={colors.danger} />
-        <Text style={[styles.syncPillText, { color: colors.danger }]}>Offline</Text>
+        <Ionicons
+          name="cloud-offline-outline"
+          size={12}
+          color={colors.danger}
+        />
+        <Text style={[styles.syncPillText, { color: colors.danger }]}>
+          Offline
+        </Text>
       </View>
     );
   }
@@ -493,7 +634,7 @@ function SyncPill({
       />
       <Text style={styles.syncPillText}>
         {lastSyncedAt
-          ? new Date(lastSyncedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+          ? `Synced ${formatRelativeTime(lastSyncedAt, now)}`
           : "Cached"}
       </Text>
     </View>
@@ -505,7 +646,11 @@ function ErrorState({ onRetry }: { onRetry: () => void }) {
   const styles = useMemo(() => makeStyles(colors, shadow), [colors, shadow]);
   return (
     <View style={styles.emptyWrap}>
-      <Ionicons name="cloud-offline-outline" size={40} color={colors.textFaint} />
+      <Ionicons
+        name="cloud-offline-outline"
+        size={40}
+        color={colors.textFaint}
+      />
       <Text style={styles.emptyTitle}>Can't reach the server</Text>
       <Text style={styles.emptySubtitle}>
         Check your connection, then try again.
@@ -523,7 +668,7 @@ function CatalogSkeleton() {
   const styles = useMemo(() => makeStyles(colors, shadow), [colors, shadow]);
   return (
     <View style={{ paddingHorizontal: spacing.lg }}>
-      {Array.from({ length: 6 }).map((_, i) => (
+      {Array.from({ length: 20 }).map((_, i) => (
         <View key={i} style={styles.skeletonRow}>
           <View style={styles.skeletonThumb} />
           <View style={{ flex: 1, gap: 6 }}>
@@ -562,7 +707,9 @@ function CartBar({
   if (count === 0) return null;
 
   return (
-    <Animated.View style={[styles.cartBarWrap, { transform: [{ translateY }] }]}>
+    <Animated.View
+      style={[styles.cartBarWrap, { transform: [{ translateY }] }]}
+    >
       <Pressable style={styles.cartBar} onPress={onPress}>
         <View style={styles.cartBarBadge}>
           <Text style={styles.cartBarBadgeText}>{count}</Text>
@@ -631,7 +778,9 @@ function CatalogRow({
             isLow && styles.stockPillTextLow,
           ]}
         >
-          {isOut ? "Out of stock" : `${estimatedStock.toFixed(2)} ${item.measurementUnit}`}
+          {isOut
+            ? "Out of stock"
+            : `${estimatedStock.toFixed(2)} ${item.measurementUnit}`}
         </Text>
       </View>
     </Pressable>
@@ -640,228 +789,316 @@ function CatalogRow({
 
 function makeStyles(colors: ThemeColors, shadow: ReturnType<typeof getShadow>) {
   return StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background },
-  header: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.lg,
-    paddingBottom: spacing.sm,
-  },
-  headerTitle: { fontSize: 26, fontWeight: "800", color: colors.text },
-  syncPill: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    backgroundColor: colors.surface,
-    borderRadius: radius.pill,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  syncPillError: { backgroundColor: colors.dangerSoft, borderColor: colors.dangerSoft },
-  syncPillText: { fontSize: 11, fontWeight: "600", color: colors.textMuted },
-  searchWrap: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: radius.lg,
-    paddingHorizontal: 14,
-    marginHorizontal: spacing.lg,
-    marginBottom: spacing.md,
-    height: 44,
-  },
-  searchIcon: {},
-  search: { flex: 1, fontSize: 15, color: colors.text, height: "100%" },
-  emptyWrap: { alignItems: "center", marginTop: 72, paddingHorizontal: 32, gap: 4 },
-  emptyTitle: { fontSize: 15, fontWeight: "700", color: colors.text, marginTop: 12 },
-  emptySubtitle: { fontSize: 13, color: colors.textMuted, textAlign: "center" },
-  retryButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    backgroundColor: colors.primary,
-    borderRadius: radius.md,
-    paddingHorizontal: 18,
-    paddingVertical: 11,
-    marginTop: 16,
-  },
-  retryButtonText: { color: "#fff", fontWeight: "700", fontSize: 14 },
-  skeletonRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-    paddingVertical: 12,
-  },
-  skeletonThumb: { width: 44, height: 44, borderRadius: radius.sm, backgroundColor: colors.border },
-  skeletonLine: { height: 10, borderRadius: 5, backgroundColor: colors.border },
-  row: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: colors.surface,
-    paddingVertical: 12,
-    paddingHorizontal: 12,
-    borderRadius: radius.lg,
-    marginBottom: 8,
-    gap: 12,
-    ...shadow.card,
-  },
-  rowPressed: { backgroundColor: colors.surfaceMuted },
-  rowDisabled: { opacity: 0.5 },
-  rowImage: {
-    width: 44,
-    height: 44,
-    borderRadius: radius.sm,
-    backgroundColor: colors.surfaceMuted,
-  },
-  rowImagePlaceholder: { alignItems: "center", justifyContent: "center" },
-  rowTitle: { fontSize: 15, fontWeight: "700", color: colors.text },
-  rowSubtitle: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
-  stockPill: {
-    backgroundColor: colors.successSoft,
-    borderRadius: radius.pill,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-  },
-  stockPillLow: { backgroundColor: colors.warningSoft },
-  stockPillOut: { backgroundColor: colors.dangerSoft },
-  stockPillText: { fontSize: 12, fontWeight: "700", color: colors.success },
-  stockPillTextLow: { color: colors.warning },
-  stockPillTextOut: { color: colors.danger },
-  modalOverlay: {
-    flex: 1,
-    justifyContent: "flex-end",
-    backgroundColor: "rgba(15,23,42,0.45)",
-  },
-  modalScrim: StyleSheet.absoluteFill,
-  modalCard: {
-    backgroundColor: colors.surface,
-    borderTopLeftRadius: radius.xl,
-    borderTopRightRadius: radius.xl,
-    padding: spacing.xl,
-    paddingTop: spacing.sm,
-  },
-  modalHandle: {
-    width: 36,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: colors.border,
-    alignSelf: "center",
-    marginBottom: 16,
-  },
-  modalTitle: { fontSize: 18, fontWeight: "700", color: colors.text },
-  modalSubtitle: { fontSize: 13, color: colors.textMuted, marginTop: 4, marginBottom: 16 },
-  qtyInput: {
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: radius.md,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    fontSize: 17,
-    marginBottom: 16,
-    color: colors.text,
-    backgroundColor: colors.surfaceMuted,
-  },
-  modalActions: { flexDirection: "row", gap: 12 },
-  button: {
-    flex: 1,
-    borderRadius: radius.md,
-    paddingVertical: 14,
-    alignItems: "center",
-  },
-  buttonPrimary: { backgroundColor: colors.primary },
-  buttonPrimaryText: { color: "#fff", fontWeight: "700", fontSize: 15 },
-  buttonSecondary: { backgroundColor: colors.surfaceMuted },
-  buttonSecondaryText: { color: colors.text, fontWeight: "600", fontSize: 15 },
-  buttonDisabled: { opacity: 0.5 },
-  cartBarWrap: {
-    position: "absolute",
-    left: 16,
-    right: 16,
-    bottom: 16,
-  },
-  cartBar: {
-    backgroundColor: colors.primary,
-    borderRadius: radius.xl,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    ...shadow.floating,
-  },
-  cartBarBadge: {
-    backgroundColor: "rgba(255,255,255,0.25)",
-    borderRadius: radius.pill,
-    width: 24,
-    height: 24,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  cartBarBadgeText: { color: "#fff", fontWeight: "800", fontSize: 12 },
-  cartBarText: { color: "#fff", fontWeight: "700", fontSize: 15, flex: 1 },
-  cartBarAction: { flexDirection: "row", alignItems: "center", gap: 4 },
-  cartBarActionText: { color: "#fff", fontWeight: "700", fontSize: 14 },
-  reviewContainer: { flex: 1, backgroundColor: colors.background, paddingHorizontal: spacing.xl },
-  reviewHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 16,
-  },
-  reviewTitle: { fontSize: 20, fontWeight: "800", color: colors.text },
-  cartRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: colors.surface,
-    borderRadius: radius.md,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    marginBottom: 8,
-    gap: 10,
-  },
-  cartRowTitle: { fontSize: 14, fontWeight: "700", color: colors.text },
-  cartRowSubtitle: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
-  qtyStepper: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: colors.surfaceMuted,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  sectionLabel: { fontSize: 13, fontWeight: "700", marginTop: 16, marginBottom: 8, color: colors.text },
-  paymentRow: { flexDirection: "row", gap: 8, marginBottom: 12 },
-  paymentOption: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 6,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surface,
-    borderRadius: radius.md,
-    paddingVertical: 10,
-  },
-  paymentOptionActive: { backgroundColor: colors.primary, borderColor: colors.primary },
-  paymentOptionText: { fontSize: 12, fontWeight: "600", color: colors.textMuted },
-  paymentOptionTextActive: { color: "#fff" },
-  creditNote: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 8,
-    backgroundColor: colors.warningSoft,
-    borderRadius: radius.md,
-    padding: 10,
-    marginBottom: 12,
-  },
-  creditNoteText: { flex: 1, fontSize: 12, color: colors.warning },
-  reviewTotal: { fontSize: 17, fontWeight: "800", color: colors.text, textAlign: "right", marginVertical: 12 },
+    container: { flex: 1, backgroundColor: colors.background },
+    header: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      alignItems: "center",
+      paddingHorizontal: spacing.lg,
+      paddingTop: spacing.lg,
+      paddingBottom: spacing.sm,
+    },
+    headerTitle: { fontSize: 26, fontWeight: "800", color: colors.text },
+    syncPill: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 4,
+      backgroundColor: colors.surface,
+      borderRadius: radius.pill,
+      paddingHorizontal: 10,
+      paddingVertical: 5,
+      borderWidth: 1,
+      borderColor: colors.border,
+    },
+    syncPillError: {
+      backgroundColor: colors.dangerSoft,
+      borderColor: colors.dangerSoft,
+    },
+    syncPillText: { fontSize: 11, fontWeight: "600", color: colors.textMuted },
+    issueBanner: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 8,
+      backgroundColor: colors.dangerSoft,
+      borderRadius: radius.md,
+      marginHorizontal: spacing.lg,
+      marginBottom: spacing.md,
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+    },
+    issueText: {
+      flex: 1,
+      fontSize: 12,
+      fontWeight: "600",
+      color: colors.danger,
+    },
+    searchWrap: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 8,
+      backgroundColor: colors.surface,
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderRadius: radius.lg,
+      paddingHorizontal: 14,
+      marginHorizontal: spacing.lg,
+      marginBottom: spacing.md,
+      height: 44,
+    },
+    searchIcon: {},
+    search: { flex: 1, fontSize: 15, color: colors.text, height: "100%" },
+    emptyWrap: {
+      alignItems: "center",
+      marginTop: 72,
+      paddingHorizontal: 32,
+      gap: 4,
+    },
+    emptyTitle: {
+      fontSize: 15,
+      fontWeight: "700",
+      color: colors.text,
+      marginTop: 12,
+    },
+    emptySubtitle: {
+      fontSize: 13,
+      color: colors.textMuted,
+      textAlign: "center",
+    },
+    retryButton: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 6,
+      backgroundColor: colors.primary,
+      borderRadius: radius.md,
+      paddingHorizontal: 18,
+      paddingVertical: 11,
+      marginTop: 16,
+    },
+    retryButtonText: { color: "#fff", fontWeight: "700", fontSize: 14 },
+    skeletonRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 12,
+      paddingVertical: 12,
+    },
+    skeletonThumb: {
+      width: 44,
+      height: 44,
+      borderRadius: radius.sm,
+      backgroundColor: colors.border,
+    },
+    skeletonLine: {
+      height: 10,
+      borderRadius: 5,
+      backgroundColor: colors.border,
+    },
+    row: {
+      flexDirection: "row",
+      alignItems: "center",
+      backgroundColor: colors.surface,
+      paddingVertical: 12,
+      paddingHorizontal: 12,
+      borderRadius: radius.lg,
+      marginBottom: 8,
+      gap: 12,
+      ...shadow.card,
+    },
+    rowPressed: { backgroundColor: colors.surfaceMuted },
+    rowDisabled: { opacity: 0.5 },
+    rowImage: {
+      width: 44,
+      height: 44,
+      borderRadius: radius.sm,
+      backgroundColor: colors.surfaceMuted,
+    },
+    rowImagePlaceholder: { alignItems: "center", justifyContent: "center" },
+    rowTitle: { fontSize: 15, fontWeight: "700", color: colors.text },
+    rowSubtitle: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
+    stockPill: {
+      backgroundColor: colors.successSoft,
+      borderRadius: radius.pill,
+      paddingHorizontal: 10,
+      paddingVertical: 5,
+    },
+    stockPillLow: { backgroundColor: colors.warningSoft },
+    stockPillOut: { backgroundColor: colors.dangerSoft },
+    stockPillText: { fontSize: 12, fontWeight: "700", color: colors.success },
+    stockPillTextLow: { color: colors.warning },
+    stockPillTextOut: { color: colors.danger },
+    modalOverlay: {
+      flex: 1,
+      justifyContent: "flex-end",
+      backgroundColor: "rgba(15,23,42,0.45)",
+    },
+    modalScrim: StyleSheet.absoluteFill,
+    modalCard: {
+      backgroundColor: colors.surface,
+      borderTopLeftRadius: radius.xl,
+      borderTopRightRadius: radius.xl,
+      padding: spacing.xl,
+      paddingTop: spacing.sm,
+    },
+    modalHandle: {
+      width: 36,
+      height: 4,
+      borderRadius: 2,
+      backgroundColor: colors.border,
+      alignSelf: "center",
+      marginBottom: 16,
+    },
+    modalTitle: { fontSize: 18, fontWeight: "700", color: colors.text },
+    modalSubtitle: {
+      fontSize: 13,
+      color: colors.textMuted,
+      marginTop: 4,
+      marginBottom: 16,
+    },
+    qtyInput: {
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderRadius: radius.md,
+      paddingHorizontal: 14,
+      paddingVertical: 12,
+      fontSize: 17,
+      marginBottom: 16,
+      color: colors.text,
+      backgroundColor: colors.surfaceMuted,
+    },
+    stockWarning: {
+      flexDirection: "row",
+      alignItems: "flex-start",
+      gap: 6,
+      marginTop: -8,
+      marginBottom: 16,
+    },
+    stockWarningText: {
+      flex: 1,
+      fontSize: 12,
+      color: colors.warning,
+      lineHeight: 16,
+    },
+    modalActions: { flexDirection: "row", gap: 12 },
+    button: {
+      flex: 1,
+      borderRadius: radius.md,
+      paddingVertical: 14,
+      alignItems: "center",
+    },
+    buttonPrimary: { backgroundColor: colors.primary },
+    buttonPrimaryText: { color: "#fff", fontWeight: "700", fontSize: 15 },
+    buttonSecondary: { backgroundColor: colors.surfaceMuted },
+    buttonSecondaryText: {
+      color: colors.text,
+      fontWeight: "600",
+      fontSize: 15,
+    },
+    buttonDisabled: { opacity: 0.5 },
+    cartBarWrap: {
+      position: "absolute",
+      left: 16,
+      right: 16,
+      bottom: 16,
+    },
+    cartBar: {
+      backgroundColor: colors.primary,
+      borderRadius: radius.xl,
+      paddingVertical: 12,
+      paddingHorizontal: 14,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 10,
+      ...shadow.floating,
+    },
+    cartBarBadge: {
+      backgroundColor: "rgba(255,255,255,0.25)",
+      borderRadius: radius.pill,
+      width: 24,
+      height: 24,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    cartBarBadgeText: { color: "#fff", fontWeight: "800", fontSize: 12 },
+    cartBarText: { color: "#fff", fontWeight: "700", fontSize: 15, flex: 1 },
+    cartBarAction: { flexDirection: "row", alignItems: "center", gap: 4 },
+    cartBarActionText: { color: "#fff", fontWeight: "700", fontSize: 14 },
+    reviewContainer: {
+      flex: 1,
+      backgroundColor: colors.background,
+      paddingHorizontal: spacing.xl,
+    },
+    reviewHeader: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      alignItems: "center",
+      marginBottom: 16,
+    },
+    reviewTitle: { fontSize: 20, fontWeight: "800", color: colors.text },
+    cartRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      backgroundColor: colors.surface,
+      borderRadius: radius.md,
+      paddingVertical: 10,
+      paddingHorizontal: 12,
+      marginBottom: 8,
+      gap: 10,
+    },
+    cartRowTitle: { fontSize: 14, fontWeight: "700", color: colors.text },
+    cartRowSubtitle: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
+    qtyStepper: {
+      width: 28,
+      height: 28,
+      borderRadius: 14,
+      backgroundColor: colors.surfaceMuted,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    sectionLabel: {
+      fontSize: 13,
+      fontWeight: "700",
+      marginTop: 16,
+      marginBottom: 8,
+      color: colors.text,
+    },
+    paymentRow: { flexDirection: "row", gap: 8, marginBottom: 12 },
+    paymentOption: {
+      flex: 1,
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 6,
+      borderWidth: 1,
+      borderColor: colors.border,
+      backgroundColor: colors.surface,
+      borderRadius: radius.md,
+      paddingVertical: 10,
+    },
+    paymentOptionActive: {
+      backgroundColor: colors.primary,
+      borderColor: colors.primary,
+    },
+    paymentOptionText: {
+      fontSize: 12,
+      fontWeight: "600",
+      color: colors.textMuted,
+    },
+    paymentOptionTextActive: { color: "#fff" },
+    creditNote: {
+      flexDirection: "row",
+      alignItems: "flex-start",
+      gap: 8,
+      backgroundColor: colors.warningSoft,
+      borderRadius: radius.md,
+      padding: 10,
+      marginBottom: 12,
+    },
+    creditNoteText: { flex: 1, fontSize: 12, color: colors.warning },
+    reviewTotal: {
+      fontSize: 17,
+      fontWeight: "800",
+      color: colors.text,
+      textAlign: "right",
+      marginVertical: 12,
+    },
   });
 }

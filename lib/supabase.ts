@@ -1,4 +1,5 @@
 import "react-native-url-polyfill/auto";
+import { AppState } from "react-native";
 import * as SecureStore from "expo-secure-store";
 import { createClient } from "@supabase/supabase-js";
 
@@ -28,6 +29,22 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     detectSessionInUrl: false,
   },
 });
+
+// autoRefreshToken only keeps the refresh timer running while something
+// calls startAutoRefresh() — Supabase doesn't wire this to app lifecycle on
+// its own. Without it, a token can go stale while backgrounded and the
+// refresh silently never resumes, surfacing later as a 401 mid-sync instead
+// of refreshing on foreground like it should.
+AppState.addEventListener("change", (state) => {
+  if (state === "active") {
+    supabase.auth.startAutoRefresh();
+  } else {
+    supabase.auth.stopAutoRefresh();
+  }
+});
+if (AppState.currentState === "active") {
+  supabase.auth.startAutoRefresh();
+}
 
 // Base URL of the Next.js web app — the mobile app talks to its API routes
 // (/api/ceramics for catalog reads, /api/sales/sync for the offline queue),
