@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "ACSM Sales",
+    "name": "Tylio Seller",
     "slug": "acsm-sales",
     "scheme": "acsm-sales",
     "version": "1.0.0",
@@ -27,7 +27,16 @@
     "plugins": [
       "expo-router",
       "expo-secure-store",
-      "expo-sqlite"
+      "expo-sqlite",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 200,
+          "resizeMode": "contain",
+          "backgroundColor": "#FFFFFF"
+        }
+      ]
     ],
     "extra": {
       "router": {},

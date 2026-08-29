@@ -6,7 +6,7 @@ Read the exact versioned docs at https://docs.expo.dev/versions/v57.0.0/ before 
 
 This app is offline-first: every write queues locally in SQLite (`lib/db.ts`,
 `expo-sqlite`) before it's pushed to the web backend
-(`acsm-web`'s `POST /api/orders/sync`), and the UI always reads from the local
+(`tylio-web`'s `POST /api/orders/sync`), and the UI always reads from the local
 queue, never from an in-flight network call.
 
 ### Orders are the only write path
