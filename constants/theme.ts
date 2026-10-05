@@ -1,9 +1,9 @@
 export type ThemeColors = typeof lightColors;
 
 export const lightColors = {
-  primary: "#2563eb",
-  primaryDark: "#1d4ed8",
-  primarySoft: "#eff6ff",
+  primary: "#b35025",
+  primaryDark: "#953400",
+  primarySoft: "#feeee8",
   success: "#059669",
   successSoft: "#ecfdf5",
   warning: "#d97706",
@@ -21,9 +21,9 @@ export const lightColors = {
 };
 
 export const darkColors: ThemeColors = {
-  primary: "#3b82f6",
-  primaryDark: "#60a5fa",
-  primarySoft: "#1e293b",
+  primary: "#df784e",
+  primaryDark: "#fb9167",
+  primarySoft: "#411e0f",
   success: "#34d399",
   successSoft: "#0f2b23",
   warning: "#fbbf24",

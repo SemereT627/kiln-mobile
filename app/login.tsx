@@ -52,7 +52,7 @@ export default function LoginScreen() {
         <View style={styles.brandMark}>
           <Ionicons name="storefront" size={26} color="#fff" />
         </View>
-        <Text style={styles.title}>Tylio Mobile</Text>
+        <Text style={styles.title}>Kiln Mobile</Text>
         <Text style={styles.subtitle}>Sign in to record sales.</Text>
       </View>
 
