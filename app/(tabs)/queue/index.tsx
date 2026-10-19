@@ -9,10 +9,12 @@ import { useOrders } from "@/hooks/use-orders";
 import { useAuth } from "@/context/auth-context";
 import { OrderCard } from "@/components/order-card";
 import { OrderDetailSheet } from "@/components/order-detail-sheet";
+import { OrderDateFilter, type DateFilter } from "@/components/order-date-filter";
 import { useTheme } from "@/context/theme-context";
 import { radius, spacing } from "@/constants/theme";
 import type { ThemeColors } from "@/constants/theme";
 import { groupOrdersByDate, type OrderDayGroup } from "@/lib/order-groups";
+import { formatEthiopian } from "@/lib/ethiopian-calendar";
 
 /** One row in the flat list below: today's cards render inline (most
  * common thing a seller checks, shouldn't cost an extra tap), every other
@@ -31,6 +33,7 @@ export default function QueueScreen() {
   const { orders, loaded, refreshing, refresh, reload, lastSyncedAt } = useOrders();
   const [syncIssue, setSyncIssueState] = useState<SyncIssue | null>(null);
   const [selectedOrder, setSelectedOrder] = useState<PendingOrder | null>(null);
+  const [dateFilter, setDateFilter] = useState<DateFilter | null>(null);
 
   useFocusEffect(
     useCallback(() => {
@@ -38,17 +41,30 @@ export default function QueueScreen() {
     }, []),
   );
 
-  const groups = useMemo(() => groupOrdersByDate(orders, new Date()), [orders]);
-  const todayGroup = groups[0]?.title === "Today" ? groups[0] : null;
+  const filteredOrders = useMemo(() => {
+    if (!dateFilter) return orders;
+    const targetKey = dateFilter.date.toDateString();
+    return orders.filter((o) => new Date(o.createdAt).toDateString() === targetKey);
+  }, [orders, dateFilter]);
+
+  const groups = useMemo(() => groupOrdersByDate(filteredOrders, new Date()), [filteredOrders]);
+  const todayGroup = !dateFilter && groups[0]?.title === "Today" ? groups[0] : null;
   const otherGroups = todayGroup ? groups.slice(1) : groups;
 
   const rows: Row[] = useMemo(() => {
     const result: Row[] = [];
     todayGroup?.data.forEach((order, index) => result.push({ kind: "order", order, index }));
+    if (dateFilter) {
+      // Filtered to a single day — show those orders inline, no day-row drill-in.
+      otherGroups.forEach((group) =>
+        group.data.forEach((order, index) => result.push({ kind: "order", order, index })),
+      );
+      return result;
+    }
     if (otherGroups.length > 0) result.push({ kind: "earlier-label" });
     otherGroups.forEach((group) => result.push({ kind: "day-row", group }));
     return result;
-  }, [todayGroup, otherGroups]);
+  }, [todayGroup, otherGroups, dateFilter]);
 
   async function handleDiscard(clientId: string) {
     await discardOrder(clientId);
@@ -66,13 +82,20 @@ export default function QueueScreen() {
   return (
     <View style={styles.container}>
       <View style={[styles.header, { paddingTop: insets.top + spacing.sm }]}>
-        <Text style={styles.headerTitle}>Order Queue</Text>
+        <View>
+          <Text style={styles.headerTitle}>Order Queue</Text>
+          <Text style={styles.ethiopianCaption}>{formatEthiopian(new Date())}</Text>
+        </View>
         {lastSyncedAt && (
           <Text style={styles.syncCaption}>
             Synced{" "}
             {lastSyncedAt.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}
           </Text>
         )}
+      </View>
+
+      <View style={styles.filterRow}>
+        <OrderDateFilter value={dateFilter} onChange={setDateFilter} />
       </View>
 
       {loaded && !lastSyncedAt && (
@@ -123,9 +146,13 @@ export default function QueueScreen() {
           loaded ? (
             <View style={styles.emptyWrap}>
               <Ionicons name="receipt-outline" size={40} color={colors.textFaint} />
-              <Text style={styles.emptyTitle}>No orders yet</Text>
+              <Text style={styles.emptyTitle}>
+                {dateFilter ? "No orders on this date" : "No orders yet"}
+              </Text>
               <Text style={styles.emptySubtitle}>
-                Orders you submit from Sell will show up here.
+                {dateFilter
+                  ? "Try a different date, or clear the filter."
+                  : "Orders you submit from Sell will show up here."}
               </Text>
             </View>
           ) : null
@@ -155,6 +182,7 @@ export default function QueueScreen() {
               <View style={{ flex: 1 }}>
                 <Text style={styles.dayRowTitle}>{item.group.title}</Text>
                 <Text style={styles.dayRowSub}>
+                  {formatEthiopian(new Date(item.group.dateKey))} ·{" "}
                   {item.group.data.length} order{item.group.data.length !== 1 ? "s" : ""}
                 </Text>
               </View>
@@ -185,7 +213,14 @@ function makeStyles(colors: ThemeColors) {
     paddingBottom: spacing.md,
   },
   headerTitle: { fontSize: 26, fontWeight: "800", color: colors.text },
+  ethiopianCaption: { fontSize: 12, color: colors.textFaint, marginTop: 1 },
   syncCaption: { fontSize: 12, color: colors.textMuted },
+  filterRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: spacing.lg,
+    paddingBottom: spacing.md,
+  },
   issueBanner: {
     flexDirection: "row",
     alignItems: "center",

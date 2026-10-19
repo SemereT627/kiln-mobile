@@ -11,6 +11,7 @@ import { useTheme } from "@/context/theme-context";
 import { radius, spacing } from "@/constants/theme";
 import type { ThemeColors } from "@/constants/theme";
 import { groupOrdersByDate } from "@/lib/order-groups";
+import { formatEthiopian } from "@/lib/ethiopian-calendar";
 
 /** A single earlier day's orders, pushed from the day list at /queue. Reuses
  * the same order data/merge logic as the day list — filtered down to one
@@ -42,9 +43,16 @@ export default function QueueDayScreen() {
         <Pressable onPress={() => router.back()} hitSlop={10} style={styles.backButton}>
           <Ionicons name="chevron-back" size={24} color={colors.text} />
         </Pressable>
-        <Text style={styles.headerTitle} numberOfLines={1}>
-          {group?.title ?? "Orders"}
-        </Text>
+        <View style={{ flex: 1, alignItems: "center" }}>
+          <Text style={styles.headerTitle} numberOfLines={1}>
+            {group?.title ?? "Orders"}
+          </Text>
+          {date && (
+            <Text style={styles.ethiopianCaption} numberOfLines={1}>
+              {formatEthiopian(new Date(date))}
+            </Text>
+          )}
+        </View>
         <View style={styles.backButton} />
       </View>
 
@@ -87,7 +95,8 @@ function makeStyles(colors: ThemeColors) {
       paddingBottom: spacing.md,
     },
     backButton: { width: 32, height: 32, alignItems: "center", justifyContent: "center" },
-    headerTitle: { flex: 1, textAlign: "center", fontSize: 18, fontWeight: "800", color: colors.text },
+    headerTitle: { textAlign: "center", fontSize: 18, fontWeight: "800", color: colors.text },
+    ethiopianCaption: { fontSize: 11, color: colors.textFaint, marginTop: 1 },
     emptyWrap: { alignItems: "center", marginTop: 72, paddingHorizontal: 32, gap: 4, flex: 1, justifyContent: "center" },
     emptyTitle: { fontSize: 15, fontWeight: "700", color: colors.text, marginTop: 12 },
   });
