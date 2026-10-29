@@ -31,6 +31,12 @@ function initialsFrom(name: string | null, email: string | undefined) {
     .toUpperCase();
 }
 
+type Period = "month" | "all";
+
+const formatCount = (n: number) => n.toLocaleString("en-US");
+const formatETB = (n: number) =>
+  `${n.toLocaleString("en-US", { maximumFractionDigits: 0 })} ETB`;
+
 function formatMemberSince(iso: string | undefined) {
   if (!iso) return null;
   return new Date(iso).toLocaleDateString(undefined, { month: "long", year: "numeric" });
@@ -47,12 +53,44 @@ export default function ProfileScreen() {
   const [loadError, setLoadError] = useState(false);
   const { orders, refresh: refreshOrders, loaded: ordersLoaded, lastSyncedAt } = useOrders();
 
-  const stats = {
-    total: orders.length,
-    pending: orders.filter((o) => o.approvalStatus === "pending").length,
-    approved: orders.filter((o) => o.approvalStatus === "approved").length,
-    rejected: orders.filter((o) => o.approvalStatus === "rejected").length,
-  };
+  const [period, setPeriod] = useState<Period>("month");
+
+  // Counts grow without bound, so default to this month and keep all-time
+  // one tap away. Approved value uses the admin's final qty/price if changed.
+  const stats = useMemo(() => {
+    const now = new Date();
+    const scoped =
+      period === "all"
+        ? orders
+        : orders.filter((o) => {
+            const d = new Date(o.createdAt);
+            return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
+          });
+    const approvedOrders = scoped.filter((o) => o.approvalStatus === "approved");
+    return {
+      total: scoped.length,
+      // Not-yet-synced orders have no approval status yet; they're pending too.
+      pending: scoped.filter((o) => o.approvalStatus === "pending" || !o.approvalStatus).length,
+      approved: approvedOrders.length,
+      rejected: scoped.filter((o) => o.approvalStatus === "rejected").length,
+      approvedValue: approvedOrders.reduce(
+        (sum, o) =>
+          sum +
+          o.items.reduce(
+            (s, i) =>
+              s + (i.finalQuantity ?? i.quantity) * (i.finalPriceAtSale ?? i.priceAtSale ?? 0),
+            0,
+          ),
+        0,
+      ),
+    };
+  }, [orders, period]);
+
+  const statusRows = [
+    { key: "approved", label: "Approved", count: stats.approved, color: colors.success },
+    { key: "pending", label: "Pending", count: stats.pending, color: colors.warning },
+    { key: "rejected", label: "Rejected", count: stats.rejected, color: colors.danger },
+  ];
 
   const loadProfile = useCallback(async () => {
     if (!session) return;
@@ -140,38 +178,71 @@ export default function ProfileScreen() {
         </View>
       )}
 
-      <View style={styles.statsRow}>
-        <View style={styles.statCard}>
-          <Text style={styles.statValue} allowFontScaling={false}>
-            {stats.total}
-          </Text>
-          <Text style={styles.statLabel} allowFontScaling={false} numberOfLines={1}>
-            Orders
-          </Text>
+      <View style={styles.statsHeader}>
+        <Text style={[styles.sectionLabel, styles.statsHeaderLabel]}>My orders</Text>
+        <View style={styles.segmented} accessibilityRole="tablist">
+          {(
+            [
+              { key: "month", label: "This month" },
+              { key: "all", label: "All time" },
+            ] as const
+          ).map((opt) => {
+            const active = period === opt.key;
+            return (
+              <Pressable
+                key={opt.key}
+                onPress={() => setPeriod(opt.key)}
+                accessibilityRole="tab"
+                accessibilityState={{ selected: active }}
+                style={[styles.segment, active && styles.segmentActive]}
+              >
+                <Text style={[styles.segmentText, active && styles.segmentTextActive]}>
+                  {opt.label}
+                </Text>
+              </Pressable>
+            );
+          })}
         </View>
-        <View style={[styles.statCard, styles.statDivider]}>
-          <Text style={[styles.statValue, { color: colors.warning }]} allowFontScaling={false}>
-            {stats.pending}
-          </Text>
-          <Text style={styles.statLabel} allowFontScaling={false} numberOfLines={1}>
-            Pending
-          </Text>
+      </View>
+
+      <View style={styles.statsCard}>
+        <View style={styles.statsTop}>
+          <View style={styles.statsTopCol}>
+            <Text style={styles.statsBig} numberOfLines={1} adjustsFontSizeToFit>
+              {formatCount(stats.total)}
+            </Text>
+            <Text style={styles.statsCaption}>
+              {stats.total === 1 ? "order" : "orders"}
+            </Text>
+          </View>
+          <View style={[styles.statsTopCol, styles.statsTopRight]}>
+            <Text style={styles.statsValue} numberOfLines={1} adjustsFontSizeToFit>
+              {formatETB(stats.approvedValue)}
+            </Text>
+            <Text style={styles.statsCaption}>approved sales</Text>
+          </View>
         </View>
-        <View style={[styles.statCard, styles.statDivider]}>
-          <Text style={[styles.statValue, { color: colors.success }]} allowFontScaling={false}>
-            {stats.approved}
-          </Text>
-          <Text style={styles.statLabel} allowFontScaling={false} numberOfLines={1}>
-            Approved
-          </Text>
+
+        {/* Approval split — proportional bar, then exact counts */}
+        <View style={styles.splitBar}>
+          {stats.total === 0 ? (
+            <View style={[styles.splitSeg, { flex: 1, backgroundColor: colors.surfaceMuted }]} />
+          ) : (
+            statusRows
+              .filter((r) => r.count > 0)
+              .map((r) => (
+                <View key={r.key} style={[styles.splitSeg, { flex: r.count, backgroundColor: r.color }]} />
+              ))
+          )}
         </View>
-        <View style={[styles.statCard, styles.statDivider]}>
-          <Text style={[styles.statValue, { color: colors.danger }]} allowFontScaling={false}>
-            {stats.rejected}
-          </Text>
-          <Text style={styles.statLabel} allowFontScaling={false} numberOfLines={1}>
-            Rejected
-          </Text>
+        <View style={styles.statusList}>
+          {statusRows.map((r) => (
+            <View key={r.key} style={styles.statusRow}>
+              <View style={[styles.statusDot, { backgroundColor: r.color }]} />
+              <Text style={styles.statusLabel}>{r.label}</Text>
+              <Text style={styles.statusCount}>{formatCount(r.count)}</Text>
+            </View>
+          ))}
         </View>
       </View>
 
@@ -324,21 +395,51 @@ function makeStyles(colors: ThemeColors, shadow: ReturnType<typeof getShadow>) {
     marginTop: spacing.sm,
   },
 
-  statsRow: {
+  statsHeader: {
     flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginTop: spacing.xl,
+    marginBottom: spacing.sm,
+  },
+  statsHeaderLabel: { marginTop: 0, marginBottom: 0 },
+  segmented: {
+    flexDirection: "row",
+    backgroundColor: colors.surfaceMuted,
+    borderRadius: radius.pill,
+    padding: 3,
+  },
+  segment: { paddingHorizontal: spacing.md, paddingVertical: 6, borderRadius: radius.pill },
+  segmentActive: { backgroundColor: colors.surface, ...shadow.card },
+  segmentText: { fontSize: 12, fontWeight: "600", color: colors.textMuted },
+  segmentTextActive: { color: colors.text },
+
+  statsCard: {
     backgroundColor: colors.surface,
     borderRadius: radius.lg,
-    marginTop: spacing.lg,
-    paddingVertical: spacing.lg,
+    padding: spacing.lg,
     ...shadow.card,
   },
-  statCard: { flex: 1, alignItems: "center" },
-  statDivider: {
-    borderLeftWidth: 1,
-    borderColor: colors.border,
+  statsTop: { flexDirection: "row", alignItems: "flex-end", gap: spacing.lg },
+  statsTopCol: { flex: 1, minWidth: 0 },
+  statsTopRight: { alignItems: "flex-end" },
+  statsBig: { fontSize: 32, fontWeight: "800", color: colors.text, fontVariant: ["tabular-nums"] },
+  statsValue: { fontSize: 18, fontWeight: "700", color: colors.text, fontVariant: ["tabular-nums"] },
+  statsCaption: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
+  splitBar: {
+    flexDirection: "row",
+    height: 8,
+    borderRadius: radius.pill,
+    overflow: "hidden",
+    gap: 2,
+    marginTop: spacing.lg,
   },
-  statValue: { fontSize: 20, fontWeight: "800", color: colors.text },
-  statLabel: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
+  splitSeg: { height: "100%" },
+  statusList: { marginTop: spacing.md, gap: spacing.sm },
+  statusRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
+  statusDot: { width: 8, height: 8, borderRadius: radius.pill },
+  statusLabel: { flex: 1, fontSize: 14, color: colors.text },
+  statusCount: { fontSize: 14, fontWeight: "700", color: colors.text, fontVariant: ["tabular-nums"] },
 
   sectionLabel: {
     fontSize: 12,
