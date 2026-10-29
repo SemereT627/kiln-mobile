@@ -3,6 +3,7 @@ import { StatusBar } from "expo-status-bar";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { AuthProvider } from "@/context/auth-context";
 import { ThemeProvider, useTheme } from "@/context/theme-context";
+import { UpdateBanner } from "@/components/update-banner";
 
 function RootStack() {
   const { scheme, colors } = useTheme();
@@ -18,6 +19,7 @@ function RootStack() {
         <Stack.Screen name="login" />
         <Stack.Screen name="(tabs)" />
       </Stack>
+      <UpdateBanner />
     </>
   );
 }

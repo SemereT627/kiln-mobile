@@ -19,7 +19,10 @@
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "package": "com.infinity627.acsmsales"
+      "package": "com.infinity627.acsmsales",
+      "runtimeVersion": {
+        "policy": "appVersion"
+      }
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -43,6 +46,9 @@
       "eas": {
         "projectId": "ac76d8f8-6053-4584-9a0d-17abd486df75"
       }
+    },
+    "updates": {
+      "url": "https://u.expo.dev/ac76d8f8-6053-4584-9a0d-17abd486df75"
     }
   }
 }
