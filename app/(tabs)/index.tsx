@@ -18,7 +18,7 @@ import * as Crypto from "expo-crypto";
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { API_BASE_URL } from "@/lib/supabase";
+import { API_BASE_URL, supabase } from "@/lib/supabase";
 import {
   cacheCatalog,
   getCachedCatalog,
@@ -84,7 +84,14 @@ export default function SellScreen() {
 
   const loadCatalog = useCallback(async (isInitial: boolean) => {
     try {
-      const res = await fetch(`${API_BASE_URL}/api/ceramics?limit=-1`);
+      // The catalog API requires a signed-in user (no public reads).
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (!session) throw new Error("no session");
+      const res = await fetch(`${API_BASE_URL}/api/ceramics?limit=-1`, {
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      });
       if (!res.ok) throw new Error("fetch failed");
       const json = await res.json();
       const items: CachedCeramic[] = (json.data || []).map((i: any) => ({
