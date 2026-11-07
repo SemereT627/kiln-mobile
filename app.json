@@ -22,7 +22,8 @@
       "package": "com.infinity627.acsmsales",
       "runtimeVersion": {
         "policy": "appVersion"
-      }
+      },
+      "allowBackup": false
     },
     "web": {
       "favicon": "./assets/favicon.png"

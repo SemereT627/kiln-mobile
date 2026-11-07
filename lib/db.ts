@@ -1,4 +1,5 @@
 import * as SQLite from "expo-sqlite";
+import { supabase } from "@/lib/supabase";
 
 export type SyncStatus = "pending" | "syncing" | "synced" | "rejected";
 
@@ -51,6 +52,10 @@ function getDb() {
         // needed to call order-scoped endpoints (e.g. return requests)
         // against an order this device originated.
         "ALTER TABLE pending_orders ADD COLUMN server_id TEXT",
+        // Owner of a queued order, so a second seller signing in on the same
+        // phone neither sees nor syncs (under their own name) the first
+        // seller's orders.
+        "ALTER TABLE pending_orders ADD COLUMN user_id TEXT",
       ]) {
         try {
           await db.execAsync(alterStatement);
@@ -62,6 +67,21 @@ function getDb() {
     });
   }
   return dbPromise;
+}
+
+let legacyClaimed = false;
+
+/** Signed-in user's id, or null when signed out (then no orders are shown or
+ * synced). Orders queued before user_id existed are given to the first user
+ * seen after the upgrade — in practice the phone's only seller. */
+async function currentUserId(db: SQLite.SQLiteDatabase): Promise<string | null> {
+  const { data } = await supabase.auth.getSession();
+  const userId = data.session?.user.id ?? null;
+  if (userId && !legacyClaimed) {
+    await db.runAsync("UPDATE pending_orders SET user_id = ? WHERE user_id IS NULL", [userId]);
+    legacyClaimed = true;
+  }
+  return userId;
 }
 
 export type CachedCeramic = {
@@ -179,13 +199,16 @@ export async function enqueueOrder(input: {
   items: OrderCartItem[];
 }) {
   const db = await getDb();
+  const userId = await currentUserId(db);
+  if (!userId) throw new Error("Not signed in");
   await db.withTransactionAsync(async () => {
     await db.runAsync(
       `INSERT INTO pending_orders
-        (client_id, payment_method, bank_account, notes, status, created_at)
-       VALUES (?, ?, ?, ?, 'pending', ?)`,
+        (client_id, user_id, payment_method, bank_account, notes, status, created_at)
+       VALUES (?, ?, ?, ?, ?, 'pending', ?)`,
       [
         input.clientId,
+        userId,
         input.paymentMethod,
         input.bankAccount,
         input.notes,
@@ -232,16 +255,20 @@ async function attachOrderItems(
 
 export async function getAllOrders(): Promise<PendingOrder[]> {
   const db = await getDb();
+  const userId = await currentUserId(db);
   const rows = await db.getAllAsync<PendingOrderRow>(
-    "SELECT * FROM pending_orders ORDER BY created_at DESC",
+    "SELECT * FROM pending_orders WHERE user_id = ? ORDER BY created_at DESC",
+    [userId],
   );
   return attachOrderItems(db, rows);
 }
 
 export async function getPendingOrders(): Promise<PendingOrder[]> {
   const db = await getDb();
+  const userId = await currentUserId(db);
   const rows = await db.getAllAsync<PendingOrderRow>(
-    "SELECT * FROM pending_orders WHERE status IN ('pending', 'syncing') ORDER BY created_at ASC",
+    "SELECT * FROM pending_orders WHERE user_id = ? AND status IN ('pending', 'syncing') ORDER BY created_at ASC",
+    [userId],
   );
   return attachOrderItems(db, rows);
 }
@@ -337,12 +364,14 @@ export async function applyOrderItemAdjustments(
  * "estimated stock" display — the real check only happens server-side. */
 export async function getUnsyncedOrderQuantities(): Promise<Record<string, number>> {
   const db = await getDb();
+  const userId = await currentUserId(db);
   const rows = await db.getAllAsync<{ ceramic_id: string; total: number }>(
     `SELECT oi.ceramic_id as ceramic_id, SUM(oi.quantity) as total
      FROM pending_order_items oi
      JOIN pending_orders o ON o.client_id = oi.order_client_id
-     WHERE o.status IN ('pending', 'syncing')
+     WHERE o.user_id = ? AND o.status IN ('pending', 'syncing')
      GROUP BY oi.ceramic_id`,
+    [userId],
   );
   return Object.fromEntries(rows.map((r) => [r.ceramic_id, r.total]));
 }
