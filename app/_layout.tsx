@@ -5,6 +5,12 @@ import { AuthProvider } from "@/context/auth-context";
 import { ThemeProvider, useTheme } from "@/context/theme-context";
 import { UpdateBanner } from "@/components/update-banner";
 
+// Release builds keep nothing in the device log: sync errors include server
+// responses, readable over USB/logcat. The server logs every failure anyway.
+if (!__DEV__) {
+  console.log = console.info = console.warn = console.error = () => {};
+}
+
 function RootStack() {
   const { scheme, colors } = useTheme();
   return (
